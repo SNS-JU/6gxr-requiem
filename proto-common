@@ -1,0 +1,525 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+
+# ========================================================================
+
+function ppln_append () {
+    # Append VALUE to pipeline storend in VAR_NAME if VALUE is non-empty.
+    var_name="$1"
+    value="$2"
+    if [ -n "$value" ]; then
+        printf -v "$var_name" "%s ! %s" "${!var_name}" "$value"
+    fi
+}
+
+function get_framerate () {
+    vid="$1"
+    rate=$(gst-discoverer-1.0 $(realpath $vid) | \
+               grep "Frame rate" | \
+               sed -e 's/Frame rate:\s//g' | tr -d ' ')
+    if [ -z "$rate" ]; then
+        echo Error: Cannot determine framerate of video: "$vid" 1>&2
+        if [ -z "$(which gst-discoverer-1.0)" ]; then
+            echo Try: apt install gstreamer1.0-plugins-base-apps 1>&2
+        fi
+        exit -1
+    fi
+    echo $rate
+}
+
+function list_fec_schemes () {
+    cat <<EOF
+  Available schemes (gst-inspect-1.0 timestampoverlay):
+
+EOF
+    gst-inspect-1.0 $gst timeoverlayparse \
+        | sed -ne '/^\s*fec-scheme/,/^\s*name/p' \
+        | sed -e '/^\s*name/d'
+}
+# ========================================================================
+# Default values
+
+client_addr=0.0.0.0
+client_port=0
+fec_scheme=none
+server_external_port=5000
+
+# ========================================================================
+# Parse CLI args, https://stackoverflow.com/a/14203146
+
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -a|--addr)
+            addr="$2"
+            shift 2
+            ;;
+        --client-addr)
+            client_addr="$2"
+            shift 2
+            ;;
+        --client-port)
+            client_port="$2"
+            shift 2
+            ;;
+        --dia)
+            pipeline_diagram=yes
+            shift
+            ;;
+        --disable-transcode)
+            disable_transcode=yes
+            shift
+            ;;
+        --display-video)
+            display_video=yes
+            shift
+            ;;
+        --dry-run)
+            dry_run_arg="--dry-run"
+            shift
+            ;;
+        -h|--help)
+            usage=yes
+            shift
+            ;;
+        --list-fec-schemes)
+            list_fec_schemes=yes
+            shift
+            ;;
+        -m|--migration-trigger-size)
+            migration_trigger_size="$2"
+            shift 2
+            ;;
+        --next-client-address)
+            next_client_address="$2"
+            shift 2
+            ;;
+        --ninja)
+            ninja="$2"
+            shift 2
+            ;;
+        --num-buffers)
+            num_buffers="$2"
+            shift 2
+            ;;
+        --out)
+            OUT="$2"
+            shift 2
+            ;;
+        --pidfile)
+            pidfile="$2"
+            shift 2
+            ;;
+        -r|--role)
+            role="$2"
+            shift 2
+            ;;
+        --rtpjitterbuffer-latency)
+            rtpjitterbuffer_latency="$2"
+            shift 2
+            ;;
+        --rtpjitterbuffer-max-misorder-time)
+            rtpjitterbuffer_max_misorder_time="$2"
+            shift 2
+            ;;
+        --rtp-mtu)
+            rtp_mtu="$2"
+            shift 2
+            ;;
+        --rtp-randomize)
+            rtp_randomize="yes"
+            shift
+            ;;
+        --rtp-timestamp)
+            rtp_timestamp="yes"
+            shift
+            ;;
+        --sslkeylogfile)
+            sslkeylogfile="$2"
+            shift 2
+            ;;
+        --server-external-port)
+            server_external_port="$2"
+            shift 2
+            ;;
+        --timeout)
+            timeout="$2"
+            shift 2
+            ;;
+        --timestamp)
+            timestamp=yes
+            fec_scheme="$2"
+            shift 2
+            ;;
+        -v|--video)
+            video="$2"
+            shift 2
+            ;;
+        --video-export-format)
+            video_export_format="$2"
+            shift 2
+            ;;
+        -*|--*)
+            parsed=0
+            if [ "$(type -t parse_additional_arg)" == function ]; then
+                parse_additional_arg $*
+                shift $parsed
+            fi
+            if [ "$parsed" == 0 ]; then
+                echo "Error: Unknown option $1"
+                exit 1
+            fi
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift # past argument
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+# ========================================================================
+
+if [ "$usage" == "yes" ]; then
+    echo Usage: $(basename $0) [options]
+    cat <<-EOF
+    --addr ADDR         IP addr of the sink (video source)
+    --client-addr ADDR  Bind the src (video player) to this ip ADDR
+    --client-port PORT  Bind the src to PORT
+    --dia               Create a pipeline diagram
+    --disable-transcode Instead of decoding to raw video, decodebin stops at
+                        the H264 level at the sender. Cannot be used together
+                        with --timestamp.
+    --display-video     Show video in GStreamer player
+    --dry-run           Only print the pipeline, do not run it
+    --help              Display this help
+    --migration-trigger-size BYTES
+                        Migrate after receiving BYTES bytes
+    --next-client-address ADDR
+                        Socket address after migration, e.g.: 10.0.0.3:5002
+    --ninja PATH        Run additional configuration when GStreamer is
+                        available via ninja devenv
+    --num-buffers N     (gstreamer param) Limit the media size to N
+    --out DIR           Save output files into DIR
+    --pidfile FILE      Save pid into FILE
+    --role <src|sink>   src: send video, sink: receive video
+    --rtpjitterbuffer-latency MSEC
+                        (GStreamer property) Amount of ms to buffer at the
+                        receiver side's rtpjitterbuffer GStreamer element.
+                        See the docs of rtpjitterbuffer
+    --rtpjitterbuffer-max-misorder-time MSEC
+                        (GStreamer property) The maximum time (milliseconds)
+                        of misordered packets tolerated at the receiver side's
+                        rtpjitterbuffer GStreamer element.
+                        See docs of rtpjitterbuffer
+    --rtp-mtu BYTES     (GStreamer property)
+                        Set rtph264pay mtu property to BYTES
+    --rtp-randomize     Use randomized offsets for the RTP sequence number and
+                        timestamp at the sender side
+    --rtp-timestamp     Run the pipeline that measures delay via RTP timestamps
+    --server-external-port PORT
+                        Port where client sees the server (k8s: the nodePort)
+    --sslkeylogfile F   Save keylog info into F
+    --timeout SEC       When used with --rtp-timestamp, stop the GStreamer
+                        pipeline at the receiver and send an internal EOS after
+                        SEC seconds (time is measured from the start of
+                        GStreamer not from the transition to playing state)
+    --timestamp SCHEME  Add timestamp-overlay onto the video using
+                        fec-scheme SCHEME in order to calculate latency.
+                        SCHEME=help shows the details. Cannot be used together
+                        with --disable-transcode.
+    --video FILE        Video to stream
+    --video-export-format <mp4|mpegts|raw>
+                        Save the processed video in the specified format
+EOF
+    if [ "$(type -t print_additional_usage)" == function ]; then
+        print_additional_usage
+    fi
+    exit 0
+fi
+
+# ========================================================================
+
+if [ "$disable_transcode" == "yes" ] && [ "$timestamp" == "yes" ]; then
+    echo "Error: If transcoding is disabled, timestamp overlay cannot be used"
+    exit 1
+fi
+
+# Assuming libgsttimeoverlayparse.so is also available here
+plugin_path=${QUIC_PLUGIN_PATH:-$SCRIPT_DIR/../gst-plugin-quic}
+export LD_LIBRARY_PATH=$SCRIPT_DIR/../liquid-dsp
+
+gst="--gst-plugin-path=${plugin_path}"
+
+
+if [ "$fec_scheme" == help ]; then
+    cat <<-EOF
+    --timestamp SCHEME
+
+     Add timestamp-overlay onto the video using fec-scheme SCHEME in order
+     to calculate latency.
+
+EOF
+    list_fec_schemes
+    exit
+fi
+
+if [ "$list_fec_schemes" == yes ]; then
+    list_fec_schemes
+    exit
+fi
+
+if [ -n "$pidfile" ]; then
+    echo pid: $$
+    echo $$ > $pidfile
+fi
+
+if [ -n "$sslkeylogfile" ]; then
+    export SSLKEYLOGFILE=$sslkeylogfile
+fi
+
+if [ "$timestamp" == yes  ]; then
+    vconv="videoconvert"
+    gst_timestamp_overlay="timestampoverlay fec-scheme=$fec_scheme ! ${vconv}"
+
+    gst_timestamp_parse="${vconv} ! timeoverlayparse fec-scheme=$fec_scheme"
+    gst_timestamp_parse+=" ! ${vconv}"
+    export GST_DEBUG=timeoverlayparse:4
+    export GST_DEBUG_FILE=${OUT}/gst_debug.log
+else
+    gst_timestamp_overlay=""
+    gst_timestamp_parse=""
+fi
+
+if [ "$pipeline_diagram" == yes ]; then
+    if [ "$rtp_timestamp" == yes ]; then
+        echo "Error: --dia does not work with --rtp-timestamp"
+        exit -1
+    fi
+    export GST_DEBUG_DUMP_DOT_DIR=${OUT}
+fi
+
+if [ -n "$ninja"  ]; then
+    eval "$($ninja/gst-env.py --builddir=$ninja/builddir --srcdir=$ninja --only-environment)"
+fi
+
+framerate="24/1"
+max_rate="24"
+if [ -n "$video"  ]; then
+    framerate=$(get_framerate $video) || exit
+    IFS='/' read -ra mra <<< "$framerate"
+    max_rate=$(echo "scale=4; ${mra[0]} / ${mra[1]}" | bc)
+    max_rate=$(echo "$max_rate" | LC_ALL=C xargs /usr/bin/printf "%.*f\n" 0)
+    echo "Discovered frame rate: $framerate; max rate: $max_rate"
+else
+    if [ -n "$video_export_format" ]; then
+        echo Warning: changing video-export-format to none for testvideo
+        video_export_format=""
+    fi
+    if [ -z "$timeout" ]; then
+        echo Warning: changing timeout to 10 sec for testvideo
+        timeout=10
+    fi
+fi
+if [ -n "$timeout" -a "$rtp_timestamp" != yes ]; then
+    echo Warning: enabling --rtp-timestamp because there is a --timeout
+    rtp_timestamp=yes
+fi
+if [ -n "$migrate_after" -a "$rtp_timestamp" != yes -a "$role" == sink ]; then
+    echo Warning: enabling --rtp-timestamp because --migrate-after is active
+    rtp_timestamp=yes
+fi
+
+player_ppln="ximagesink"
+
+tee_name="t_split"
+tee_element="tee name=${tee_name} ! queue"
+named_tee="${tee_name}. ! queue"
+
+rtp_de_pay_element_name="rtp_de_pay"
+
+decodebin_ppln="decodebin ! videoconvert"
+if [ "$disable_transcode" == "yes" ]; then
+    decodebin_ppln_src="decodebin caps=\"video/x-h264\""
+else
+    decodebin_ppln_src=$decodebin_ppln
+fi
+
+videorate_ppln="videorate skip-to-first=true max-rate=${max_rate}"
+videorate_ppln+=" ! video/x-raw,framerate=${framerate}"
+
+if [ -n "$video_export_format" ]; then
+    filesink_ppln="videoconvert"
+    if [ "$video_export_format" == mp4 ]; then
+        ext="mp4"
+        muxer="x264enc tune=zerolatency ! qtmux"
+    elif [ "$video_export_format" == raw ]; then
+        # Raw video
+        ext="y4m"
+        muxer="video/x-raw,format=I420 ! y4menc ! queue"
+    elif [ "$video_export_format" == mpegts ]; then
+        # MPEG transport stream
+        ext="ts"
+        muxer="x264enc tune=zerolatency ! mpegtsmux"
+    fi
+    filesink_ppln+=" ! ${muxer} ! filesink location="
+    if [ "$role" == src ]; then
+        filesink_ppln+=${OUT}/ref.${ext}
+    else
+        filesink_ppln+=${OUT}/dist.${ext}
+    fi
+fi
+
+if [ "$role" == src ]; then
+    if [ -z "$video" ]; then
+        # Configure for specific video frame rate
+        sender_video_src="videotestsrc num-buffers=${num_buffers:-500}"
+        sender_video_src+=" ! video/x-raw,framerate=${framerate}"
+        if [ "$timestamp" == yes  ]; then
+            sender_video_src+=",width=640,height=360"
+        fi
+    else
+        sender_video_src="filesrc location=$video"
+        sender_video_src+=" num-buffers=${num_buffers:-1500}"
+    fi
+
+    h264enc_ppln="h264parse config-interval=-1"
+    if [ -z "$disable_transcode" ]; then
+        h264enc_ppln="x264enc tune=zerolatency key-int-max=5 ! ${h264enc_ppln}"
+    fi
+
+    rtp_src_ppln="${h264enc_ppln} ! rtph264pay name=${rtp_de_pay_element_name}"
+    if [ "$rtp_randomize" == yes ]; then
+        rtp_src_ppln+=" timestamp-offset=0 seqnum-offset=0"
+    fi
+    if [ -n "$rtp_mtu" ]; then
+        rtp_src_ppln+=" mtu=${rtp_mtu}"
+    fi
+    if [ "$mode" == stream ]; then
+        rtp_src_ppln+=" ! rtpstreampay"
+    fi
+
+    gst_ppln="${sender_video_src}"
+    if [ -n "$video_export_format" ] || [ "$display_video" == yes ]; then
+        gst_ppln+=" ! ${tee_element}"
+        if [ -n "$video_export_format" ]; then
+            # Tee branch: save video file
+            gst_ppln+=" ! ${decodebin_ppln_src}"
+            ppln_append gst_ppln "${gst_timestamp_overlay}"
+            if [ "$timestamp" == yes ]; then
+                gst_ppln+=" ! video/x-raw,format=I420"
+            fi
+            gst_ppln+=" ! ${h264enc_ppln}"
+            gst_ppln+=" ! ${decodebin_ppln} ! ${videorate_ppln} ! ${filesink_ppln}"
+        fi
+        if [ "$display_video" == yes ]; then
+            if [ -n "$video_export_format" ]; then
+                gst_ppln+="   ${named_tee}"
+            fi
+            gst_ppln+=" ! ${decodebin_ppln}"
+            ppln_append gst_ppln "${gst_timestamp_overlay}"
+            gst_ppln+=" ! ${player_ppln}"
+        fi
+        gst_ppln+="   ${named_tee}"
+    fi
+    gst_ppln+=" ! ${decodebin_ppln_src}"
+    ppln_append gst_ppln "${gst_timestamp_overlay}"
+    if [ "$timestamp" == yes ]; then
+        gst_ppln+=" ! video/x-raw,format=I420"
+    fi
+    gst_ppln+=" ! ${rtp_src_ppln}"
+
+    # quicsink/updsink is added by raw-quic/rtp-over-udp to the end of
+    # the pipeline
+else
+    rtp_sink_app_datagram_caps="application/x-rtp"
+    rtp_sink_app_stream_caps="application/x-rtp-stream"
+    rtp_sink_media_caps="media=video,clock-rate=90000"
+    rtp_sink_media_caps+=",encoding-name=H264,payload=96"
+    rtp_sink_depay_parse="rtpjitterbuffer latency="
+    rtp_sink_depay_parse+=${rtpjitterbuffer_latency:-200}
+    rtp_sink_depay_parse+=" drop-on-latency=true"
+    if [ -n "$rtpjitterbuffer_max_misorder_time" ]; then
+        rtp_sink_depay_parse+=" max-misorder-time="
+        rtp_sink_depay_parse+="${rtpjitterbuffer_max_misorder_time}"
+    fi
+    rtp_sink_depay_parse+=" ! rtph264depay name=${rtp_de_pay_element_name}"
+    rtp_sink_depay_parse+=" ! h264parse"
+    if [[ "$mode" == @(datagram|segmented-datagram) ]]; then
+        rtp_sink_ppln="${rtp_sink_app_datagram_caps},${rtp_sink_media_caps}"
+        rtp_sink_ppln+=" ! ${rtp_sink_depay_parse}"
+    else
+        rtp_sink_ppln="${rtp_sink_app_stream_caps},${rtp_sink_media_caps}"
+        rtp_sink_ppln+=" ! rtpstreamdepay ! ${rtp_sink_depay_parse}"
+    fi
+
+    # quicsrc/updsrc is added by raw-quic/rtp-over-udp to the
+    # beginning of the pipeline
+
+    gst_ppln="${rtp_sink_ppln} ! ${decodebin_ppln} ! ${videorate_ppln}"
+    if [ -n "$video_export_format" ] || [ "$display_video" == yes ]; then
+        ppln_append gst_ppln "${gst_timestamp_parse}"
+        if [ -n "$video_export_format" ] && [ "$display_video" == yes ]; then
+            gst_ppln+=" ! ${tee_element}"
+        fi
+        if [ -n "$video_export_format" ]; then
+            gst_ppln+=" ! ${filesink_ppln}"
+        fi
+        if [ -n "$video_export_format" ] && [ "$display_video" == yes ]; then
+            gst_ppln+="   ${named_tee}"
+        fi
+        if [ "$display_video" == yes ]; then
+            gst_ppln+=" ! ${player_ppln}"
+        fi
+    fi
+    if [ -z "$video_export_format" ] && [ -z "$display_video" ]; then
+        gst_ppln+=" ! fakesink"
+    fi
+fi
+
+if [ "$rtp_timestamp" == yes ]; then
+    gst="./gst-pipeline/gst-pipeline ${gst} ${dry_run_arg} --out ${OUT}"
+
+    if [ "$role" == sink ]; then
+        if [ -n "$migrate_after" ]; then
+            gst+=" --migrate-after $migrate_after"
+            gst+=" --next-client-address $next_client_address"
+        fi
+        if [ -n "$timeout" ]; then
+            if [ -n "$video" ]; then
+                dur=$(gst-discoverer-1.0 $video | grep "Duration" | \
+                          sed -e 's/Duration:\s//g' | tr -d ' ')
+                IFS=':' read -ra da <<< "$dur"
+                IFS='.' read -ra das <<< "${da[2]}"
+                dur_sec="${das[0]}"
+                if [ "${#das[@]}" -gt 1 ]; then
+                    if [ "${das[1]}" -ge 5 ]; then
+                        dur_sec=$(echo "${das[0]}+1" | bc)
+                    fi
+                fi
+                dur_sec=$(echo "${da[0]}*3600+${da[1]}*60+${dur_sec}" | bc)
+                grace_period_sec=$(( $dur_sec+5 ))
+                if [ "$timeout" -lt "$grace_period_sec" ]; then
+                    if [ "$timeout" -eq 0 ]; then
+                        echo "[Warning] timeout is set to $timeout sec"\
+                             "which is equal to being disabled"
+                    else
+                        echo "[Warning] Input video is ~$dur_sec sec"\
+                             "long, the used $timeout sec timeout might"\
+                             "be too short, an early exit can cut off"\
+                             "the end of the video"
+                    fi
+                fi
+            fi
+            gst+=" --timeout ${timeout}"
+        fi
+    fi
+
+    gst+=" --rtp-element ${rtp_de_pay_element_name} --pipeline"
+else
+    gst="gst-launch-1.0 -v -e ${gst}"
+fi

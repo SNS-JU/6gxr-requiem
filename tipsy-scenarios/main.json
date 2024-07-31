@@ -1,0 +1,186 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "delay": [25, 50, 100],
+          "keepalive": 100,
+          "datagram": ["--use-datagram", ""],
+          "scenario": ["baseline", "involuntary", "planned"],
+          "repeat": [1, 2, 3, 4, 5]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --measure --scenario $scenario --fec-scheme conv_v615 --proto raw-quic --result $PWD/result.json -- --keepalive $keepalive $datagram"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+    {
+      "type": "simple",
+      "x-axis": "delay",
+      "y-axis": "avg_median",
+      "error-bar": "stddev",
+      "title": "link-delay vs median-latency",
+      "group-by": ["scenario", "datagram"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "avg_median": {"$avg": "$out.stats.median_y"},
+            "median": {"$first": "$out.stats.median_y"},
+            "stddev": {"$stdDevPop": "$out.stats.median_y"},
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "delay": {"$first": "$tester.environ.delay"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "x-axis": "delay",
+      "y-axis": "avg_frames",
+      "error-bar": "stddev",
+      "title": "number of received video frames",
+      "group-by": ["scenario", "datagram"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "avg_frames": {"$avg": "$out.stats.records"},
+            "stddev": {"$stdDevPop": "$out.stats.records"},
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "delay": {"$first": "$tester.environ.delay"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "x-axis": "delay",
+      "y-axis": "lost_frames",
+      "error-bar": "stddev",
+      "title": "number of missing video frames",
+      "group-by": ["scenario", "datagram"],
+      "aggregate": [
+        {
+          "$facet": {
+            "max_frame_id": [
+              {
+                "$group": {
+                  "_id": { "id": null },
+                  "max_id": { "$max": "$out.stats.records" }
+                }
+              }
+            ],
+            "other": [
+              {
+                "$group": {
+                  "_id": {
+                    "datagram": "$tester.environ.datagram",
+                    "scenario": "$tester.environ.scenario",
+                    "delay": "$tester.environ.delay"
+                  },
+                  "avg_frames": {"$avg": "$out.stats.records"},
+                  "stddev": {"$stdDevPop": "$out.stats.records"},
+                  "datagram": {"$first": "$tester.environ.datagram"},
+                  "scenario": {"$first": "$tester.environ.scenario"},
+                  "delay": {"$first": "$tester.environ.delay"}
+                }
+              }
+            ]
+          }
+        },
+        { "$unwind": "$other" },
+        {
+          "$project": {
+            "lost_frames": {
+                    "$subtract": [
+                      {
+                        "$getField": {
+                          "field": "max_id",
+                          "input": {"$first": "$max_frame_id"}
+                        }
+                      },
+                      "$other.avg_frames"
+                    ]
+            },
+            "avg_frames": "$other.avg_frames",
+            "stddev": "$other.stddev",
+            "datagram": "$other.datagram",
+            "scenario": "$other.scenario",
+            "delay": "$other.delay"
+          }
+        }
+      ]
+    },
+    {
+      "type": "datafile",
+      "x-axis": "latency",
+      "y-axis": "on-time-frame-ratio",
+      "datafile": "../../measurements/{id}/latency-budget.data",
+      "title": "Latency budget",
+      "group-by": ["scenario", "datagram", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 }
+        },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "id": {"$first": "$out.test-id"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "datafile",
+      "x-axis": "latency",
+      "y-axis": "on-time-frame-ratio",
+      "datafile": "../../measurements/{id}/latency-budget.data",
+      "title": "Latency budget (delay={delay}ms)",
+      "group-by": ["scenario", "datagram", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 4 } },
+        { "$match": { "tester.environ.delay": 50 } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "id": {"$first": "$out.test-id"}
+          }
+        }
+      ]
+    }
+  ]
+}

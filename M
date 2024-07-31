@@ -1,0 +1,143 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+MININET=${MININET:-$SCRIPT_DIR/../../mininet}
+m=${MININET}/util/m
+net=mininet
+
+# ========================================================================
+
+function add_arg() {
+    # Return "$flag $arg" if $arg is not empty.
+
+    flag=$1
+    arg="$2"
+    if [ -n "$arg" ]; then
+        echo $flag $arg
+    fi
+}
+
+# ========================================================================
+
+# Parse CLI args, https://stackoverflow.com/a/14203146
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --client)
+            client_addr="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage=yes
+            shift
+            ;;
+        --k8s-config)
+            k8s_config="$2"
+            shift 2
+            ;;
+        --k8s-container)
+            k8s_container="$2"
+            shift 2
+            ;;
+        --k8s-namespace)
+            k8s_namespace="$2"
+            shift 2
+            ;;
+        --k8s-pod)
+            k8s_pod="$2"
+            shift 2
+            ;;
+        -l|--log)
+            logging=yes
+            outdir="$2"
+            shift 2
+            ;;
+        --net)
+            net="$2"
+            shift 2
+            ;;
+        --server)
+            server_addres="$2"
+            shift 2
+            ;;
+        --title)
+            title="$2"
+            shift 2
+            ;;
+        -*|--*)
+            echo "Error: Unknown option $1"
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# ========================================================================
+
+if [ "$usage" == "yes" ]; then
+    echo Usage: $(basename $0) [options] host cmd [args ...]
+    cat <<-EOF
+    --client ADDR   Set client's addres to ADDR
+    --help          Display this help
+    --k8s-config C
+    --k8s-container C
+    --k8s-namespace NS
+    --k8s-pod POD
+    --net TYPE      TYPE is either mininet, ssh, or k8s
+    --server ADDR   Set server's addres to ADDR
+    --title TITLE   Set title of the new screen window
+    -l DIR          Log into directory DIR
+EOF
+    exit 0
+fi
+
+host=$1
+if [ "$net" == mininet ]; then
+    if [ ! -x "$m" ]; then
+        echo "Not found: $(realpath "${MININET}")/util/m"
+        echo Set environment variable: MININET
+        exit -1
+    fi
+else
+    case $host in
+        h1)
+            # We assume test-in-screen is running on the client,
+            # otherwise we should ssh into it.
+            m=""
+            shift
+            ;;
+        h2)
+            if [ "$net" == ssh ]; then
+                m="ssh $server_addres"
+            elif [ "$net" == k8s ]; then
+                m="kubectl"
+                m+=" $(add_arg --kubeconfig "$k8s_config")"
+                m+=" exec"
+                m+=" $(add_arg -n "$k8s_namespace")"
+                m+=" $k8s_pod"
+                m+=" $(add_arg -c "$k8s_container")"
+                m+=" -it --"
+            fi
+            shift
+            ;;
+        *)
+            echo Error: unknown host: $host
+            exit 1
+            ;;
+    esac
+fi
+
+title=${title:-mininet:$host}
+echo -ne "\033k${title}\033\\"
+echo -ne "\033]0;${title}\007"
+if [ "$logging" == yes ]; then
+    echo $m $* > $outdir/cmd.$title.log
+    script -c "$m $*" $outdir/output.$host.log
+else
+    $m $*
+fi

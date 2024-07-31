@@ -1,0 +1,216 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "diff-videos",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": 50,
+          "validation": "skip",
+          "video": [
+            "bbb_360p@15.00fps.mp4",
+            "bbb_360p@30.00fps.mp4",
+            "bbb_360p@60.00fps.mp4",
+            "bbb_720p@15.00fps.mp4",
+            "bbb_720p@30.00fps.mp4",
+            "bbb_720p@60.00fps.mp4",
+            "bbb_1080p@15.00fps.mp4",
+            "bbb_1080p@30.00fps.mp4",
+            "bbb_1080p@60.00fps.mp4",
+            "bbb_1440p@15.00fps.mp4",
+            "bbb_1440p@30.00fps.mp4",
+            "bbb_1440p@60.00fps.mp4",
+            "bbb_2160p@15.00fps.mp4",
+            "bbb_2160p@30.00fps.mp4",
+            "bbb_2160p@60.00fps.mp4",
+            "cheetah_360p@23.97fps.mp4",
+            "cheetah_720p@23.97fps.mp4",
+            "cheetah_1080p@23.97fps.mp4",
+            "cheetah_1440p@23.97fps.mp4",
+            "cheetah_2160p@23.97fps.mp4"
+          ],
+          "mode": ["stream", "datagram"],
+          "Scenario": "planned",
+          "keepalive": 50,
+          "crop": 3,
+          "migrateAfter": 4
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp --vqa-metric dssim --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref --crop-stats $crop -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+    {
+      "type": "simple",
+      "title": "diff-videos: Mean Latency [ms]",
+      "x-axis": "bitrate",
+      "y-axis": "avg_mean",
+      "error-bar": "stddev_mean",
+      "group-by": ["mode", "video"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "diff-videos" } },
+        {
+          "$addFields": {
+            "bitrate": {
+              "$getField": {
+                "field": "Bitrate",
+                "input": {"$first": "$out.video_stats.containers"}
+              }
+            },
+            "video": { "$substr": ["$tester.environ.video", 0, 3] }
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "bitrate": "$bitrate",
+              "video": "$video",
+              "mode": "$tester.environ.mode"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "bitrate": {"$first": {"$toInt": "$bitrate"}},
+            "video": {"$first": "$video"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "diff-videos: Mean DSSIM",
+      "x-axis": "bitrate",
+      "y-axis": "avg_mean",
+      "error-bar": "stddev_mean",
+      "group-by": ["mode", "video"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "diff-videos" } },
+        {
+          "$addFields": {
+            "bitrate": {
+              "$getField": {
+                "field": "Bitrate",
+                "input": {"$first": "$out.video_stats.containers"}
+              }
+            },
+            "video": { "$substr": ["$tester.environ.video", 0, 3] }
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "bitrate": "$bitrate",
+              "video": "$video",
+              "mode": "$tester.environ.mode"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "bitrate": {"$first": {"$toInt": "$bitrate"}},
+            "video": {"$first": "$video"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "avg_mean": {"$avg": "$out.dssim.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.dssim.mean_y"},
+            "avg_median": {"$avg": "$out.dssim.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.dssim.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "video bitrates",
+      "x-axis": "video",
+      "y-axis": "bitrate",
+      "sort-column": "bitrate",
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "diff-videos" } },
+        {
+          "$addFields": {
+            "bitrate": {
+              "$getField": {
+                "field": "Bitrate",
+                "input": {"$first": "$out.video_stats.containers"}
+              }
+            }
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "video": "$tester.environ.video"
+            },
+            "video": {"$first": "$tester.environ.video"},
+            "bitrate": {"$first": "$bitrate"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "diff-videos: Mean Latency [ms]",
+      "x-axis": "video",
+      "y-axis": ["avg_mean", "stddev_mean"],
+      "group-by": ["mode"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "diff-videos" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "video": "$tester.environ.video",
+              "mode": "$tester.environ.mode"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "video": {"$first": "$tester.environ.video"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "diff-videos: Mean DSSIM",
+      "x-axis": "video",
+      "y-axis": ["avg_mean", "stddev_mean"],
+      "group-by": ["mode"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "diff-videos" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "video": "$tester.environ.video",
+              "mode": "$tester.environ.mode"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "video": {"$first": "$tester.environ.video"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "avg_mean": {"$avg": "$out.dssim.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.dssim.mean_y"},
+            "avg_median": {"$avg": "$out.dssim.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.dssim.median_y"}
+          }
+        }
+      ]
+    }
+  ]
+}

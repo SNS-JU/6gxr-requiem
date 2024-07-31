@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import heapq
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def process_file(in_file, out_file, min_systime=None):
+  frame_ids = {}
+  has_valid_data = None
+
+  for line in in_file:
+    m = re.search("Systime: ([0-9:.-]+); Latency: ([0-9:.-]+);"
+                  + " Frame-id: ([0-9]+)", line)
+    if not m:
+      continue
+    systime, latency, frame_id = [int(i) for i in m.groups()]
+    if frame_id > 5000:
+      # misread
+      frame_id = None
+    if frame_id and frame_id in frame_ids:
+      print(f"repeated frame: {frame_id}", file=sys.stderr)
+      continue
+    if systime < 0:
+      # absolute clock is not yet set up
+      continue
+    min_systime = min(systime, min_systime or systime)
+    if frame_id:
+      frame_ids[frame_id] = latency
+      has_valid_data = True
+      rel_time = (systime-min_systime-latency) / 1000000.0
+      latency_ms = latency / 1000000.0
+      out_file.write(f"{rel_time} {frame_id} {latency_ms}\n")
+
+  if not has_valid_data:
+    print("No valid timestamps found", file=sys.stderr)
+    exit(-1)
+
+def plot(preambulum, data_file, labels=True, x_is_seqno=False):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  if labels:
+    if x_is_seqno:
+      def_labels = '''
+        set xlabel "frame sequence number"
+        set ylabel "latency [ms]"
+      '''
+    else:
+      def_labels = '''
+        set xlabel "systime of the sender [ms]"
+        set ylabel "latency [ms]"
+      '''
+  else:
+    def_labels = ''
+
+  x_column = {True: 2, False:1}[x_is_seqno]
+  p.communicate(input=f"""
+      {preambulum}
+      set key off
+      {def_labels}
+      plot "{data_file}" using {x_column}:3 with lp
+      exit
+  """.encode())
+
+def plot_ascii(filename, x_is_seqno=False):
+  pre = f'''
+    set title "Latency derived from overlay timestamps"
+    set term dumb enhanced ansi256
+  '''
+  plot(pre, filename, False, x_is_seqno)
+
+def plot_pdf(data_file, out_file, x_is_seqno=False):
+  pre = f'''
+    set term pdf color enhanced
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, x_is_seqno=x_is_seqno)
+
+def plot_tikz(data_file, out_file, x_is_seqno=False):
+  pre = f'''
+    set term tikz latex color tikzarrows
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, x_is_seqno=x_is_seqno)
+
+def plot_median(data_file, out_file):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set print "{out_file}"
+      stats "{data_file}" using 3
+      exit
+  """.encode())
+
+
+def get_filename(out_dir, args, postfix):
+  return out_dir / (args.out_basename + postfix)
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument('infile', type=argparse.FileType('r'))
+  parser.add_argument('--start-timestamp', type=int,
+                      help='Use this timestamp as the zero point when '
+                      'calculating the relative elapsed time')
+  parser.add_argument('--out-basename', '-o', type=str,
+                      default=None,
+                      help="Output filename without extesion")
+  parser.add_argument('--out-dir', type=str,
+                      help="Dir to put results into. Default: next to INFILE.")
+  parser.add_argument('--ascii', '-a', action='store_true',
+                      help='Print an ascii plot as well')
+  parser.add_argument('--pdf', '-p', action='store_true',
+                      help='Print a pdf plot')
+  parser.add_argument('--stats', '-s', action='store_true',
+                      help="Print statistics into a file")
+  parser.add_argument('--tikz', '-t', action='store_true',
+                      help='Print a tikz plot')
+  parser.add_argument('--seqno', action='store_true',
+                      help='X axis is frame seq.no instead of receiving time')
+  args = parser.parse_args()
+  if args.out_basename is None:
+    args.out_basename = {True: 'seqno-vs-latency',
+                         False: 'time-vs-latency'}[args.seqno]
+  if args.out_dir:
+    out_dir = Path(args.out_dir)
+  else:
+    out_dir = Path(args.infile.name).parent
+  datafile = get_filename(out_dir, args, '.data')
+  with datafile.open('w') as out:
+    process_file(args.infile, out, args.start_timestamp)
+  if args.ascii:
+    plot_ascii(datafile, x_is_seqno=args.seqno)
+  if args.pdf:
+    plot_pdf(datafile, get_filename(out_dir, args, '.pdf'),
+             x_is_seqno=args.seqno)
+  if args.tikz:
+    plot_tikz(datafile, get_filename(out_dir, args, '.tex'),
+              x_is_seqno=args.seqno)
+  if args.stats:
+    plot_median(datafile, get_filename(out_dir, args, '_stats.txt'))

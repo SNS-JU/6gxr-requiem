@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import subprocess
+from pathlib import Path
+
+def log_stats(data_file, out_file, column):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set print "{out_file}"
+      stats "{data_file}" using {column}
+      exit
+  """.encode())
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="")
+    parser.add_argument("file", type=str,
+        help="File to process, must end with '.data'")
+    parser.add_argument("--column", "-c", type=int, required=True,
+        help="Column number in which --val in checked")
+    parser.add_argument("--value", "-v", type=float,
+        help="Drop lines if their value is less then VALUE in COLUMN.")
+    parser.add_argument("--value-file", type=str,
+        help="Read VALUE from VALUE-FILE")
+    parser.add_argument("--first-column", type=int)
+    parser.add_argument("--first-file", "-f", type=str,
+        help="For the first non-dropped line save FIRST-COLUMN into FIRST-FILE")
+    parser.add_argument("--stats-column", type=int,
+        help="Column to calculate stats on.")
+
+    args = parser.parse_args()
+
+    infile=Path(args.file)
+    if infile.suffix != '.data':
+      print(f"File's extension is not .data: {args.file}")
+      exit(-1)
+
+    if args.value_file is not None:
+      val = Path(args.value_file).read_text().strip()
+      val = float(val)
+    else:
+      val = args.value
+
+    first = None
+    cropped_file = infile.parent / (infile.stem + '.cropped.data')
+    with cropped_file.open('w') as f_out:
+      with infile.open('r') as f_in:
+        for line in f_in:
+          if float(line.split()[args.column]) < val:
+            continue
+          if first is None:
+            first = line.split()[args.first_column or 0]
+          f_out.write(line)
+
+    if args.first_column is not None:
+      if args.first_file:
+        first_file = infile.parent / args.first_file
+        with first_file.open('w') as f_out:
+          f_out.write(first)
+      else:
+        print(first)
+
+    if args.stats_column:
+      stats_file = infile.parent / (infile.stem + '-overall.cropped.txt')
+      log_stats(cropped_file, stats_file, args.stats_column)

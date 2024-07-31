@@ -1,0 +1,1360 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+
+## Dependencies
+
+# apt install gstreamer1.0-plugins-base-apps gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly bc libfec0 screen
+
+## SUDO (man "sudoers (5)")
+#
+# By default, sudo asks for password in every new screen window.  This
+# prohibits automation.  The solution is to add the following line to
+# /etc/sudoers.
+#
+# Defaults:<USERNAME>        timestamp_type=global
+#
+
+## Download a test-video
+#
+# https://download.blender.org/peach/bigbuckbunny_movies/
+# https://cdn.pixabay.com/video/2020/10/27/53486-473869656_tiny.mp4?download
+
+# ========================================================================
+
+function add_arg() {
+    # Return "$flag $arg" if $arg is not empty.
+
+    flag=$1
+    arg="$2"
+    if [ -n "$arg" ]; then
+        echo $flag $arg
+    fi
+}
+function get_wnd() {
+    title=$1
+    $S -Q windows "%n:%t===" \
+        | sed -e 's/===/\n/g' \
+        | grep "$title" \
+        | sed -E 's/([0-9]+):.*/\1/'
+    $S -X echo ""
+}
+function stop_tcpdump() {
+    for host in $tcpdump; do
+        wnd=$(get_wnd tcpdump:$host)
+        if [ -n "$wnd" ]; then
+            $S -p $wnd -X stuff ^c
+        fi
+    done
+    # Sleep to avoid: "editcap: The file "x.pcap" appears to have been cut
+    # short in the middle of a packet."
+    sleep 1
+
+    for host in $tcpdump; do
+        if [ "$host" == h2 ]; then
+            copy_remote_files $host $server_out_dir $OUT \
+                              sslkey.$host \
+                              test.$host.pcap
+        fi
+        if [ -s "${OUT}/sslkey.$host" ]; then
+            editcap --inject-secrets tls,${OUT}/sslkey.$host \
+                    "${OUT}/test.$host.pcap" \
+                    "${OUT}/test.$host.pcapng"
+        fi
+    done
+    if [ "$print_stats" == yes ]; then
+        for h in $tcpdump; do
+            stats_file="${OUT}/test.${h}.pcap"
+            tcpdump -nr "$stats_file"|awk '{print $5}'|sort|uniq -c
+            echo -n "interfaces used: "
+            tcpdump -nr "$stats_file" 2>/dev/null \
+                |awk '{print $2}'|sort|uniq|wc -l
+        done
+    fi
+}
+function exit_with_error() {
+    if [ -n "$(get_wnd tcpdump)" ]; then
+        stop_tcpdump
+    fi
+    for host in $hosts; do
+        # First, try gently.
+        wnd=$(get_wnd mininet:$host)
+        if [ -n "$wnd" ]; then
+            $S -p $wnd -X stuff ^c
+        fi
+    done
+    sleep 0.5
+    for host in $hosts; do
+        wnd=$(get_wnd mininet:$host)
+        if [ -n "$wnd" ]; then
+            $S -p $wnd -X kill
+        fi
+    done
+    wnd=$(get_wnd mininet:0)
+    if [ -n "$wnd" ]; then
+        $S -p $wnd -X stuff "exit\n"
+    fi
+    mn_log=${OUT}/output.mn.log
+    sleep 1 # Wait for mininet to exit and mn_log to be written
+    if [ -r "$mn_log" ]; then
+        grep --color=always ^Warning: "$mn_log"
+    fi
+    check_exit_code $hosts
+    exit -1
+}
+function is_file_exists() {
+    host=$1
+    file=$2
+    if [ $net == ssh -a "$host" == h2 ]; then
+        exec_on_host h2 test -e "$file"
+        return $?
+    elif [ $net == k8s -a "$host" == h2 ]; then
+        exec_on_host h2 test -e "$file" 2>/dev/null
+        return $?
+    fi
+    test -e "$file"
+    return $?
+}
+function wait_for_file() {
+    host=$1
+    file=$2
+    timeout=$3
+    waited=0
+    echo -n "Waiting for $file: "
+    while [ "$waited" -lt "$timeout" ]; do
+        if $(is_file_exists "$host" "$file"); then
+            echo " ok"
+            return
+        fi
+        echo -n "."
+        sleep 1
+        waited=$(( $waited + 1 ))
+    done
+    echo " timeout"
+    exit_with_error
+}
+function wait_for_file_to_disappear() {
+    host=$1
+    file=$2
+    timeout=$3
+    waited=0
+    echo -n "Waiting for $file to disappear: "
+    while [ "$waited" -lt "$timeout" ]; do
+        if $(is_file_exists "$host" "$file"); then
+            echo -n "."
+        else
+            echo " ok"
+            return
+        fi
+        sleep 1
+        waited=$(( $waited + 1 ))
+    done
+    echo " timeout"
+    exit_with_error
+}
+function wait_for_hosts_to_disappear () {
+    hosts="$*"
+    for host in $hosts; do
+        pidfile=$(host_out_dir $host)/${pidprefix}_${host}
+        wait_for_file $host ${pidfile} 10
+        pid=$(exec_on_host $host cat $pidfile)
+        if [ -z "$pid" ]; then
+            echo Empty pidfile: $pidfile
+            exit_with_error
+        fi
+        echo "Waiting for $host to disappear"
+        wait_for_file_to_disappear $host /proc/$pid 60
+        exec_rm $host rm "$pidfile"
+    done
+}
+function check_exit_code () {
+    hosts="$*"
+    for host in $hosts; do
+        logfile=$OUT/output.$host.log
+        if [ ! -r "$logfile" ]; then
+            continue
+        fi
+        if $(tail -n1 $logfile | grep -vq 'COMMAND_EXIT_CODE="0"');
+        then
+            cat $logfile
+            return
+        fi
+    done
+}
+function get_ip_addresses () {
+    # This is unused.  It's here to demostrate how to get the ip
+    # addresses of a host.
+    host=$1
+
+    ssh $host ip --json a | \
+                jq -r -C '.[] | select(.link_type!="loopback")
+                              | .addr_info[] | select(.family=="inet")
+                              | .local'
+}
+function exit_with_container_error () {
+    container="$1"
+    msg="$2"
+    echo "Check the availability of $container container: $msg"
+    exit -1
+}
+function get_container_state () {
+    sudo docker container inspect -f '{{.State.Status}}' $1 2>/dev/null
+}
+function run_container () {
+    echo "run $1"
+    docker_rm_arg=""
+    if [ "$keep_vqmcli" != "yes" ]; then
+        docker_rm_arg="--rm"
+    fi
+    sudo docker run \
+           $docker_rm_arg \
+           --name $1 \
+           -v "${OUT}":/home/jovyan/work/experiments \
+           cloudmedialab/vqmtk:latest \
+           "${@:2}"
+}
+function start_container () {
+    echo "start $1"
+    sudo docker start $1
+}
+function stop_container () {
+    # This is unused.
+    sudo docker stop $1
+}
+function rebind () {
+    addr="$1"
+    # The first two commands are just query the dbus interface.  It is
+    # enough to execute the last one.
+
+    #exec_on_host h1 qdbus --literal org.freedesktop.gst
+    #exec_on_host h1 qdbus --literal org.freedesktop.gst /quic
+
+    exec_on_host h1 qdbus --literal org.freedesktop.gst /quic \
+                org.freedesktop.gst.Rebind "$addr"
+}
+function calculate_vqmtk_scores () {
+    vqmtk_cli_metrics_args=--${1//,/ --}
+    ref_video="$2"
+    dist_video="${OUT}/dist.${sink_ve_ext}"
+    vqmcli_container_name="vqmcli"
+    vqmcli_cmd="vqmcli --verbose "
+    vqmcli_cmd+="$vqmtk_cli_metrics_args "
+    vqmcli_cmd+="--ref work/experiments/$(basename ${ref_video}) "
+    vqmcli_cmd+="--dist work/experiments/$(basename ${dist_video}) "
+    vqmcli_cmd+="--outdir work/experiments/${vqmcli_results_in_container}"
+
+    vqmcli_state=$(get_container_state $vqmcli_container_name)
+
+    if [ "$vqmcli_state" == "exited" ]; then
+        sudo docker rm -f $vqmcli_container_name
+    fi
+    run_container $vqmcli_container_name $vqmcli_cmd
+
+    rm -f -r ${vqmcli_results}_*
+}
+function write_videostats() {
+    file=$1
+    content=$(gst-discoverer-1.0 $file | \
+                tail -n +5 | \
+                sed -e "/^$/d; \
+                        s/\#//g ; \
+                        s/$/\",/g; \
+                        s/^  //g; \
+                        s/^  \([^ ]\)/{\1/g; \
+                        s/^    //g; \
+                        s/\(.*\): /\"\1\": \"/g; \
+                        s/\"Max bitrate\": \([^,]\+\)/\"Max bitrate\": \1}/g; \
+                        s/\"{/{\"/g; \
+                        s/^\"container\(.*\)/\"containers\":[/g; \
+                       "
+           )
+    cat <<EOF >>$result_json
+      "video_stats": {
+         ${content::-1}
+        ]
+      },
+EOF
+}
+function write_stats() {
+    label=$1
+    stats_f=$2
+    if [ -r "$stats_f" ]; then
+        cat <<EOF >>$result_json
+          "$label": {
+            $(sed -E 's/(\S+)\s+(\S+)/"\1": \2,/' $stats_f)
+           "dummy": 0
+          },
+EOF
+    else
+        success=0
+    fi
+}
+function check_ipv4_address() {
+    ip_regex='^((25[0-5]|(2[0-4]|1\d|[1-9]|)\d)\.?\b){4}$'
+    if $(echo $3|grep -v -q --perl-regexp $ip_regex); then
+        echo Invalid --$2 argument: $3
+        exit -1
+    fi
+}
+function exec_kubectl() {
+    kubectl $(add_arg --kubeconfig "$k8s_config") \
+            $(add_arg -n "$k8s_namespace") \
+            $*
+}
+function exec_on_host() {
+    if [ $net == mininet ]; then
+        $MININET/util/m $*
+        return
+    fi
+    host=$1
+    shift
+    case $host in
+        h1)
+            # We assume test-in-screen is running on the client,
+            # otherwise we should ssh into it.
+            $*
+            ;;
+        h2)
+            if [ $net == ssh ]; then
+                ssh $server_addr $*
+            elif [ $net == k8s ]; then
+                exec_kubectl exec \
+                     $k8s_pod \
+                     $(add_arg -c $k8s_container) \
+                     -- $*
+            fi
+            ;;
+        *)
+            echo Error: unknown host: $host
+            exit 1
+            ;;
+    esac
+}
+function exec_rm() {
+    # Remove file while trying to avoid sudo
+    host=$1
+    file=$2
+    if [ "$net" == k8s ]; then
+        exec_on_host $host rm -f $file
+        return
+    fi
+    exec_on_host $host "
+      test -e $file &&
+      sudo rm $file"
+}
+function sudo_on_host() {
+    # Print sudo or "" depeding whether sudo is necessary on $host
+    host="$1"
+    if [ "$net" == ssh ]; then
+        echo sudo
+        return
+    fi
+    if [ "$net" == k8s ]; then
+        if [ "$host" == h2 ]; then
+            return
+        fi
+        echo sudo
+        return
+    fi
+    # $net == mininet
+    return
+}
+
+function get_gst_script() {
+    host=$1
+    host_dir=$SCRIPT_DIR
+    if [ $host == h2 ]; then
+        host_dir=${server_dir}
+    fi
+    case $proto in
+        udp)
+            echo "${host_dir}/rtp-over-udp"
+            ;;
+        raw-quic)
+            echo "${host_dir}/raw-quic"
+            ;;
+        *)
+            if $(is_file_exists $host "$proto"); then
+                echo {$host_dir}/"$proto"
+            else
+                echo Unknown proto on $host: $proto 1>&2
+                exit -1
+            fi
+            ;;
+    esac
+}
+function copy_remote_files() {
+    host=$1
+    src_dir="$2"
+    dst_dir="$3"
+    shift 3
+    files="$*"
+    if [ $net == mininet ]; then
+        return
+    fi
+    if [ "$host" != h2 ]; then
+        echo Cannot copy files from: $host
+        exit -1
+    fi
+    if [ $net == ssh ]; then
+        for file in $files; do
+            scp $server_addr:$src_dir/$file $dst_dir 2>/dev/null
+        done
+    elif [ $net == k8s ]; then
+        for file in $files; do
+            exec_kubectl cp \
+                 $(add_arg '-c' $k8s_container) \
+                 $k8s_pod:$src_dir/$file $dst_dir/$file 2>/dev/null
+        done
+    fi
+}
+function copy_to_host() {
+    host=$1
+    src_dir="$2"
+    dst_dir="$3"
+    shift 3
+    files="$*"
+    if [ $net == mininet ]; then
+        return
+    fi
+    if [ "$host" != h2 ]; then
+        echo Cannot copy files to: $host
+        exit -1
+    fi
+    if [ $net == ssh ]; then
+        for file in $files; do
+            scp $src_dir/$file $server_addr:$dst_dir 2>/dev/null
+        done
+    elif [ $net == k8s ]; then
+        for file in $files; do
+            exec_kubectl cp \
+                 $(add_arg '-c' $k8s_container) \
+                 $src_dir/$file $k8s_pod:$dst_dir/$file 2>/dev/null
+        done
+    fi
+}
+function get_out_dir() {
+    local host
+    local local_dir
+    local server_dir
+    host=$1
+    local_dir=$2
+    server_dir=$3
+    if [ $net == mininet ]; then
+        echo $local_dir
+        return
+    fi
+    if [ $host == h2 ]; then
+        echo $server_dir
+        return
+    fi
+    echo $local_dir
+}
+function check_gst_element() {
+    # Check if gst element exists
+    # Unfortunately, --exists does not work reliably
+    element="$1"
+    gst-inspect-1.0 --gst-plugin-path=${plugin_path} $element 2>/dev/null \
+        | grep -q License
+}
+function calculate_vqa_metric() {
+    if [ -z "$vqa_metric" ]; then
+        return
+    fi
+    if [ -z "$src_ve_ext" -o -z "$sink_ve_ext" ]; then
+        echo [Warning] Cannot evaluate VQA metric when video file export is \
+             disabled: used --video-export-format=${video_export_format}
+        success=0
+        return
+    fi
+
+    vqmtk_metrics_options=" msssim psnr ssim vif vmaf "
+    iqa_metrics_options=" dssim dssim-heat-map "
+    IFS=',' read -ra metrics <<< "$vqa_metric"
+    for metric in "${metrics[@]}"; do
+        metric=$(echo $metric | tr -d '[:space:]')
+        vqmtk_match=$(echo "$vqmtk_metrics_options" | grep -oP " $metric ")
+        iqa_match=$(echo "$iqa_metrics_options" | grep -oP " $metric ")
+        if [ -n "$vqmtk_match" ]; then
+            vqmtk_metrics=${vqmtk_metrics:+$vqmtk_metrics }$metric
+        elif [ -n "$iqa_match" ]; then
+            iqa_metric=$metric
+        else
+            echo "[Warning] No such VQA metric: '$metric'"
+            success=0
+        fi
+    done
+    if [ -n "$vqmtk_metrics" ]; then
+        vqmtk_metrics=${vqmtk_metrics// /,}
+
+        calculate_vqmtk_scores $vqmtk_metrics $ref_video
+
+        ./parse-vqmcli-metric --output-format data \
+                              --out-dir $vqmcli_results \
+                              --metric $vqmtk_metrics \
+                              --pdf --ascii --stats || success=0
+    fi
+    if [ -n "$iqa_metric" ]; then
+        plugin_path=$SCRIPT_DIR/../gst-plugin-quic
+        if ! check_gst_element iqa; then
+            echo Error: gst element not found: iqa
+            success=0
+            return
+        fi
+        ref_video="${OUT}/ref.${src_ve_ext}"
+        dist_video="${OUT}/dist.${sink_ve_ext}"
+        heat_map_video="${OUT}/dssim-heat-map.mp4"
+        iqa_gst_ppln="filesrc location=${ref_video} ! decodebin"
+        iqa_gst_ppln+=" ! videoconvert ! iqa name=iqa do-dssim=true"
+        if [ "$iqa_metric" == "dssim-heat-map" ]; then
+            iqa_gst_ppln+=" ! videoconvert ! x264enc"
+            iqa_gst_ppln+=" ! qtmux ! filesink location=${heat_map_video}"
+        else
+            iqa_gst_ppln+=" ! fakesink"
+        fi
+        iqa_gst_ppln+="    filesrc location=${dist_video} ! decodebin"
+        iqa_gst_ppln+=" ! videoconvert ! iqa."
+        echo "Running GStreamer pipeline to determine DSSIM score"
+        ${SCRIPT_DIR}/gst-pipeline/gst-pipeline \
+                     --iqa-element=iqa \
+                     --gst-plugin-path=$plugin_path \
+                     --out-dir=$OUT \
+                     --pipeline "${iqa_gst_ppln}" > ${OUT}/dssim.pipeline.log \
+            || success=0
+
+        tail -n +2 ${OUT}/iqa.log > ${OUT}/dssim.data
+        ./parse-iqa --out-dir ${OUT} \
+                    --pdf --ascii --stats || success=0
+        if [ -n "$crop_stats" ]; then
+            ./crop-data-file --column 0 --value-file $firstfile \
+                             --stats-column 3 \
+                             ${OUT}/dssim.data
+        fi
+    fi
+}
+function host_out_dir () {
+    host=$1
+    if [ "$host" == h1 ]; then
+        echo $OUT
+    else
+        echo $server_out_dir
+    fi
+}
+
+# ========================================================================
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+orig_wd=$(pwd)
+cd "$SCRIPT_DIR"
+
+# Parse CLI args
+
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -b|--bw)
+      bw="$2"
+      shift 2
+      ;;
+    --client)
+      client_addr="$2"
+      shift 2
+      ;;
+    --client-ifname)
+      client_ifname="$2"
+      shift 2
+      ;;
+    --compare)
+      ffmpeg_compare="yes"
+      shift 1
+      ;;
+    -c|--config)
+      config="$2"
+      shift 2
+      if [ ! -r "$config" ]; then
+        echo $0: Config file not found: $config
+        exit -1
+      fi
+      set -- $(cat "$config") "$@"
+      ;;
+    --cut-link)
+      cut_link="$2"
+      shift
+      ;;
+    --crop-stats)
+      crop_stats="$2"
+      shift
+      ;;
+    -d|--delay)
+      delay="$2"
+      shift 2
+      ;;
+    --display-video)
+      display_video="$2"
+      shift 2
+      ;;
+    --offload)
+      offload=$2
+      shift 2
+      ;;
+    --fec-scheme)
+      fec_scheme="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage=yes
+      shift
+      ;;
+    --k8s-config)
+      k8s_config="$2"
+      shift 2
+      ;;
+    --k8s-container)
+      k8s_container="$2"
+      shift 2
+      ;;
+    --k8s-namespace)
+      k8s_namespace="$2"
+      shift 2
+      ;;
+    --k8s-pod)
+      k8s_pod="$2"
+      shift 2
+      ;;
+    --keep-vqmcli)
+      keep_vqmcli=yes
+      shift 1
+      ;;
+    --loss)
+      loss="$2"
+      shift 2
+      ;;
+    --measure)
+      create_latency_budget_plot=yes
+      shift 1
+      ;;
+    --migrate-after)
+      migrate_after="$2"
+      shift 2
+      ;;
+    -m|--migration-trigger-size)
+      migration_trigger_size="$2"
+      shift 2
+      ;;
+    --net)
+      net="$2"
+      shift
+      ;;
+    --next-client-address)
+      next_client_address="$2"
+      shift 2
+      ;;
+    --ninja)
+      ninja="$2"
+      shift 2
+      ;;
+    --out-dir)
+      OUT=$2
+      shift 2
+      ;;
+    --print-stats)
+      print_stats=yes
+      shift
+      ;;
+    --proto)
+      proto="$2"
+      shift 2
+      ;;
+    --result)
+      result_json=$2
+      shift 2
+      ;;
+    --rtp-timestamp)
+      rtp_timestamp_arg="--rtp-timestamp"
+      shift
+      ;;
+    -s|--scenario)
+      scenario="$2"
+      shift 2
+      ;;
+    --server)
+      server_addr="$2"
+      shift 2
+      ;;
+    --server-dir)
+      server_dir="$2"
+      shift 2
+      ;;
+    --server-out-dir)
+      server_out_dir="$2"
+      shift 2
+      ;;
+    --server-external-port)
+      server_external_port="$2"
+      shift 2
+      ;;
+    -t|--tcpdump)
+      tcpdump="h1 h2"
+      shift
+      ;;
+    -v|--video)
+      video="$2"
+      shift 2
+      ;;
+    --video-as-ref)
+      video_as_ref="yes"
+      shift
+      ;;
+    --video-export-format)
+      video_export_format="$2"
+      shift 2
+      ;;
+    --vqa-metric)
+      vqa_metric="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      proto_args="$*"
+      set --
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+# ========================================================================
+
+if [ "$usage" == "yes" ]; then
+    cat <<-EOF
+$0
+    Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under
+    the EUPL-1.2 or later.  See LICENSE for the exact licensing
+    conditions.
+
+$0 [options] [-- PROTO_ARGS ...]
+    --bw BW         Bandwidth of the mininet link [Mbps]
+    --client ADDR   Set client's primary address to ADDR, default: 10.0.1.1
+    --client-ifname NAME
+                    Name of the client primary interface, default: h1-eth0
+    --compare       Create a video comparing input video with the output
+    --config FILE   Read additional command line arguments from FILE
+    --cut-link SEC  Cut primary link of h1 after SEC seconds
+    --crop-stats S  Remove the first S seconds from statistical results
+    --display-video <both|none|sink|src>
+                    Show video in GStreamer player at the respective side
+    --delay D       Propagation delay of the mininet link [ms]
+    --offload S     Set offloading on h2. S is enable (default) or disable
+    --fec-scheme F  FEC-scheme for timestamp-overlay, F=help shows details
+    --help          Display this help
+    --k8s-config C  Name of the kubeconfig file, e.g.: ~/.kube/config
+    --k8s-container CONTAINER
+    --k8s-namespace NS
+    --k8s-pod POD   CONTAINER, NS, POD define where the server is
+    --keep-vqmcli   Start the vqmcli container without the --rm flags
+    --loss LOSS     Link loss.  0 <= LOSS <= 100
+    --measure       Create a latency-budget plot (by modifying pipelines)
+    --migrate-after SEC
+                    Migrate after SEC second of the start of the client
+    --migration-trigger-size BYTES
+                    Migrate after receiving BYTES bytes
+    --net TYPE      TYPE is mininet (default), ssh, k8s, or help
+    --next-client-address ADDR
+                    Socket address after migration, e.g.: 10.0.2.1:5002
+                    (refer to host1's interfaces in topo.py)
+    --ninja PATH    Run additional configuration when GStreamer is
+                    available via ninja devenv
+    --out-dir DIR   Put results in directory DIR, default: /tmp
+    --print-stats   Print packet counts
+    --proto PROTO   Underlying transmission protocol: udp, raw-quic, moq
+    --result file   Save results to FILE. Default: results.json
+    --rtp-timestamp Run the pipeline that measures delay via RTP timestamps
+    --scenario S    S is the scenario to run or help
+    --server ADDR   Set the server's address to ADDR, default: 10.0.3.1
+    --server-dir D  Directory on the server containing 'test-in-screen'
+    --server-external-port PORT
+                    Port where client sees the server (in k8s: the nodePort)
+    --server-out-dir DIR
+                    Put results on the server in DIR, default: --out-dir
+    --tcpdump       Run tcpdump on hosts
+    --video FILE    Video to stream
+    --video-as-ref  Use the input video file as reference for the VQA tools,
+                    do not create one at the sender
+    --video-export-format SRC:SINK|help
+                    Save the processed video in the specified format
+    --vqa-metric METRIC
+                    Calculate video quality, METRIC=help shows details
+EOF
+    exit 0
+fi
+
+OUT=${OUT:-/tmp}
+bw=${bw:-10}
+client_addr=${client_addr:-10.0.1.1}
+client_ifname=${client_ifname:-h1-eth0}
+cut_link=${cut_link:-0}
+delay=${delay:-10}
+loss=${loss:-0}
+migration_trigger_size=${migration_trigger_size:-0}
+net=${net:-mininet}
+next_client_address=${next_client_address:-0.0.0.0:5002}
+offload=${offload:-enable}
+proto=${proto:-udp}
+server_addr=${server_addr:-10.0.3.1}
+server_dir=${server_dir:-$SCRIPT_DIR}
+server_external_port=${server_external_port:-5000}
+server_out_dir=${server_out_dir:-$OUT}
+video_export_format=${video_export_format:-"mp4:raw"}
+
+if [ "$fec_scheme" == help ]; then
+    cat <<EOF
+  --fec-scheme SCHEME
+
+  Defines the forward error correction scheme for timestamp-overlay.
+  Requires --measure as well.
+
+EOF
+    $SCRIPT_DIR/raw-quic --list-fec-schemes
+    exit
+fi
+if [ "$net" == help ]; then
+    cat <<EOF
+  --net <mininet|ssh|k8s>
+
+  mininet: Start a mininet emulation and run the experiment inside it.
+       Topology is given in topo.py
+
+       Relevant configuration options: --bw, --delay, --loss,
+       --next-client-address
+
+  ssh: Use a real network, where the client runs on the same system,
+       where test-in-screen runs.  test-in-screen accesses the sever
+       with a passwordless ssh connection.
+
+       Relevant configuration options: --client, --client-ifname,
+       --next-client-address, --server, --server-dir, --server-out-dir
+
+  k8s: Use a real network, where the client runs on the same system,
+       where test-in-screen runs.  The server run inside a kubernetes
+       cluster, and test-in-screen accesses the sever with kubectl.
+
+       Relevant configuration options: --client, --client-ifname,
+       --next-client-address, --server, --server-dir, --server-out-dir,
+       --k8s-config, --k8s-container, --k8s-namespace, --k8s-pod
+
+EOF
+    exit
+    fi
+if [ "$video_export_format" == help ]; then
+    cat <<EOF
+  --video-export-format SRC:SINK
+
+  Save the processed video in the specified format at SRC and SINK.
+  When the argument is present both need to be specified by
+  choosing one of the following values: mp4 | mpegts | none | raw.
+  Default: mp4:raw
+
+EOF
+    exit
+fi
+if [ "$scenario" == help ]; then
+    cat <<EOF
+  -s SCENARIO --scenario SCENARIO
+
+  Preset some configuration variables accroding to SCENARIO.  List of
+  possible scenarios and their relevant command line arguments:
+
+  none: (do not preset any configuration variable)
+
+  baseline: use a single path all the time
+
+  involuntary: cut link and let client handle the situation
+     --cut-link
+
+  planned: migrate client while both paths are operational
+     --next-client-address, --migration-trigger-size
+
+EOF
+    exit
+fi
+if [ "$vqa_metric" == help ]; then
+    cat <<EOF
+  --vqa-metric METRIC
+
+  Calculate video quality assessment scores using VQMTK/CLI or GStreamer.
+  One or a (comma-separated) list of metrics can be selected among the
+  following:
+
+  - dssim (DiSSIMilarity),
+  - dssim-heat-map
+          (same as the preceding but with additional video heat map output),
+  - msssim (Multi-Scale SSIM),
+  - psnr (Peak Signal-to-Noise Ratio),
+  - ssim (Structured SIMilarity),
+  - vif (Visual Information Fidelity),
+  - vmaf (Video Multimethod Assessment Fusion)
+EOF
+    exit
+fi
+if [ -n "$crop_stats" -a -z "$rtp_timestamp_arg" ]; then
+    echo [Warning] Enabling --rtp-timestamp because of --crop-stats
+    rtp_timestamp_arg="--rtp-timestamp"
+fi
+
+check_ipv4_address $net client $client_addr
+check_ipv4_address $net server $server_addr
+
+IFS=':' read -ra ve_formats <<< "$video_export_format"
+if [ "${#ve_formats[@]}" -ne 2 ]; then
+    echo "Invalid video-export-format: '$video_export_format'"
+fi
+
+src_ve_format_arg="--video-export-format ${ve_formats[0]}"
+if [ "${video_as_ref}" == "yes" ]; then
+    src_ve_format_arg=""
+    if [ "${ve_formats[0]}" != "none" ]; then
+        src_ve_ext="mp4" # Assuming mp4 input video file
+        echo "[Warning] disabling video export at sender"
+    fi
+    ve_formats[0]="none"
+fi
+case ${ve_formats[0]} in
+    none)
+        src_ve_format_arg=""
+        ;;
+    mp4)
+        src_ve_ext="mp4"
+        ;;
+    mpegts)
+        src_ve_ext="ts"
+        ;;
+    raw)
+        src_ve_ext="y4m"
+        ;;
+    *)
+        echo Invalid src video-export-format: ${ve_formats[0]}
+        exit -1
+esac
+sink_ve_format_arg="--video-export-format ${ve_formats[1]}"
+case ${ve_formats[1]} in
+    none)
+        sink_ve_format_arg=""
+        ;;
+    mp4)
+        sink_ve_ext="mp4"
+        ;;
+    mpegts)
+        sink_ve_ext="ts"
+        ;;
+    raw)
+        sink_ve_ext="y4m"
+        ;;
+    *)
+        echo Invalid src video-export-format: ${ve_formats[1]}
+        exit -1
+esac
+
+case ${display_video:-sink} in
+    both)
+        display_sender_video_arg="--display-video"
+        display_receiver_video_arg="--display-video"
+        ;;
+    none)
+        display_sender_video_arg=""
+        display_receiver_video_arg=""
+        ;;
+    src)
+        display_sender_video_arg="--display-video"
+        display_receiver_video_arg=""
+        ;;
+    sink)
+        display_sender_video_arg=""
+        display_receiver_video_arg="--display-video"
+        ;;
+    *)
+        echo Unknown video display option: $display_video
+        exit -1
+esac
+
+if [ -n "$ninja"  ]; then
+    ninja_arg="--ninja $ninja"
+fi
+# if [ -n "$rtp_timestamp_arg" -a -z "$video" ]; then
+#     echo "--rtp-timestamp requires --video as well"
+#     exit -1
+# fi
+
+if [ "$create_latency_budget_plot" == yes ]; then
+    timestamp_overlay_arg="--timestamp ${fec_scheme:-none}"
+fi
+if [ "$print_stats" == yes ]; then
+    tcpdump="h1 h2"
+fi
+
+case ${scenario:-none} in
+    none)
+        ;;
+    baseline)
+        migration_trigger_size=0
+        cut_link=0
+        ;;
+    involuntary)
+        if [ "$cut_link" == 0 ]; then
+            cut_link=4
+        fi
+        migration_trigger_size=0
+        client_addr=0.0.0.0
+        ;;
+    planned)
+        if [ "$cut_link" == 0 ]; then
+            cut_link=4
+        fi
+        if [ "$migration_trigger_size" == 0 ]; then
+            migration_trigger_size=500000
+        fi
+        next_client_address=10.0.2.1:5002
+        ;;
+    *)
+        echo Unknown scenario: $scenario
+        exit -1
+esac
+
+if [[ "$offload" != @(enable|disable) ]]; then
+    echo 'offload should be "enable" or "disable"'
+    exit -1
+fi
+
+if [[ "$net" != @(mininet|ssh|k8s) ]]; then
+    echo 'net should be "mininet", "ssh", "k8s", or "help"'
+    exit -1
+fi
+
+for host in h1 h2; do
+    gst_script=$(get_gst_script h1) || exit -1
+done
+
+result_json=${result_json:-${orig_wd}/result.json}
+MININET=${MININET:-$SCRIPT_DIR/../mininet}
+screen=""
+
+if [ -n "$video" ]; then
+    videoarg="--video \"$video\""
+    remote_video=${server_dir}/$(basename $video)
+    remote_videoarg="--video \"$remote_video\""
+    if $(is_file_exists h2 "$remote_video"); then
+        #echo Video file exists on h2: $remote_video
+        echo
+    else
+        echo Video file does not exist on h2: $remote_video
+        if [ -r "$video" ]; then
+            echo Copy video to h2:$server_dir
+            copy_to_host h2 $(dirname $video) $server_dir $(basename $video)
+        else
+            exit -1
+        fi
+    fi
+elif [ "$video_as_ref" == "yes" ]; then
+    echo "When --video-as-ref is used, an input video should be supplied"
+    exit -1
+fi
+
+# ========================================================================
+if [[ ! "$TERM" =~ ^"screen" ]]; then
+    echo test-in-screen must run inside a screen instance
+    exit -1
+fi
+if [ ! -x "$OUT" ]; then
+    echo Directory does not exist: $(realpath $OUT)
+    echo Set environment variable: OUT
+    exit -1
+fi
+if [ $net == mininet ]; then
+  if [ ! -x "${MININET}/util/m" ]; then
+    echo "Not found: $(realpath "${MININET}")/util/m"
+    echo Set environment variable: MININET
+    exit -1
+  fi
+  M=$SCRIPT_DIR/M
+elif [ $net == ssh ]; then
+  M="$SCRIPT_DIR/M --server ${server_addr} --client $client_addr --net ssh"
+elif [ $net == k8s ]; then
+  M="$SCRIPT_DIR/M --net k8s \
+         $(add_arg --k8s-config "$k8s_config")
+         $(add_arg --k8s-container "$k8s_container")
+         $(add_arg --k8s-namespace "$k8s_namespace")
+         $(add_arg --k8s-pod "$k8s_pod")"
+fi
+
+S="screen ${SCREEN}"
+mn_ready=/tmp/mininet_is_ready
+pidprefix=pid
+export MININET
+$S -X setenv MININET $MININET
+
+sudo rm -f \
+     $mn_ready \
+     $result_json \
+     ${OUT}/*-gst-discoverer*.dot \
+     ${OUT}/*-gst-launch.*.dot \
+     ${OUT}/*-gst-launch.*.dot.pdf \
+     ${OUT}/cmd.*.log \
+     ${OUT}/dist* \
+     ${OUT}/dssim* \
+     ${OUT}/gst_debug.log \
+     ${OUT}/iqa.log \
+     ${OUT}/latency-budget.data \
+     ${OUT}/latency-budget.data \
+     ${OUT}/output.{mn,h1,h2}.log \
+     ${OUT}/overlay* \
+     ${OUT}/ref* \
+     ${OUT}/rtp-ts-stats.* \
+     ${OUT}/rtp-{sink,src}.log \
+     ${OUT}/seqno-vs-latency.data \
+     ${OUT}/sslkey.* \
+     ${OUT}/test.*.pcap* \
+     ${OUT}/time-vs-latency.data \
+     ${OUT}/quicsrc.json \
+     ${OUT}/time-vs-latency_stats.txt \
+     ${OUT}/${pidprefix}*
+
+vqmcli_results_in_container="vqmcli-results"
+vqmcli_results="${OUT}/${vqmcli_results_in_container}"
+rm -f -r $vqmcli_results
+
+orig_window=$($S -Q number | cut -f1 -d" ")
+
+topo="topo.py"
+topo_args=minimal
+hosts="h2 h1"
+
+for postfix in 0 $hosts; do
+    for prefix in mininet tcpdump; do
+        wnd_title=$prefix:$postfix
+        if [ -n "$(get_wnd $wnd_title)" ]; then
+            echo "There is already a screen named \"$wnd_title\""
+            exit -1
+        fi
+    done
+done
+
+if [ $net == mininet ]; then
+  $S -t mininet:0 \
+    script --log-out $OUT/output.mn.log -c "\
+       sudo -E mn \
+         --switch=lxbr \
+         --custom \"$SCRIPT_DIR/$topo\" \
+         --topo=$topo_args,delay=$delay,bw=$bw,loss=$loss,offload=$offload \
+    "
+  wait_for_file mn $mn_ready 5
+  $S -X select ${orig_window}
+fi
+
+exec_on_host h2 mkdir -p "$server_out_dir"
+exec_on_host h2 rm -f \
+     ${server_out_dir}/ref* \
+     ${server_out_dir}/rtp-src.log \
+     ${server_out_dir}/sslkey.h2 \
+     ${server_out_dir}/${pidprefix}*
+exec_rm h2 "${server_out_dir}/test.h2.pcap"
+
+for host in $tcpdump; do
+    out_dir=$(get_out_dir $host $OUT $server_out_dir)
+    eval sslkeylog_arg_$host=\"--sslkeylogfile ${out_dir}/sslkey.$host\"
+    cmd_tcpdump="$(sudo_on_host $host) tcpdump"
+    if [ $host == h1 ]; then
+        sport=$server_external_port
+    else
+        sport=5000
+    fi
+    $S $M --title tcpdump:$host $host \
+       $cmd_tcpdump -n -i any -w "${out_dir}/test.$host.pcap" port $sport
+done
+
+$S -t mn:h2 \
+   $M -l $OUT h2 $(get_gst_script h2) \
+   --role src \
+   --addr ${client_addr} \
+   --out "$server_out_dir" \
+   $sslkeylog_arg_h2 \
+   --pidfile "${server_out_dir}/${pidprefix}_h2" \
+   $remote_videoarg \
+   $src_ve_format_arg \
+   $proto_args \
+   $timestamp_overlay_arg \
+   $ninja_arg \
+   $rtp_timestamp_arg \
+   $display_sender_video_arg
+
+$S -X select ${orig_window}
+
+$S -t mn:h1 \
+   $M -l $OUT h1 $(get_gst_script h1) \
+   --addr ${server_addr} \
+   --client-addr ${client_addr} \
+   --migration-trigger-size ${migration_trigger_size} \
+   --next-client-address ${next_client_address} \
+   --out "$OUT" \
+   --server-external-port ${server_external_port} \
+   --role sink \
+   $sslkeylog_arg_h1 \
+   --pidfile "$OUT/${pidprefix}_h1" \
+   $proto_args \
+   $timestamp_overlay_arg \
+   $videoarg \
+   $sink_ve_format_arg \
+   $ninja_arg \
+   $rtp_timestamp_arg \
+   $display_receiver_video_arg
+
+$S -X select ${orig_window}
+
+if [ -n "$migrate_after" ]; then
+    (sleep "$migrate_after" && rebind $next_client_address)&
+fi
+if [ "$cut_link" != "0" ]; then
+    (
+        sleep $cut_link
+        exec_on_host h1 ip link set dev ${client_ifname} down
+    )&
+fi
+
+wait_for_hosts_to_disappear $hosts
+jobs -r
+wait
+
+if [ $net == mininet ]; then
+    $S -p $(get_wnd mininet:0) -X stuff "exit\n"
+fi
+success=1
+
+# ========================================================================
+
+stop_tcpdump
+
+grep --color=always -ie 'warning\|error' $OUT/output.*.log
+
+if [ -n "$src_ve_ext" -a "$src_ve_ext" != none ]; then
+    copy_remote_files h2 $server_out_dir $OUT ref.$src_ve_ext
+fi
+copy_remote_files h2 $server_out_dir $OUT rtp-src.log
+
+ref_video="${OUT}/ref.${src_ve_ext}"
+if [ "$video_as_ref" == "yes" ]; then
+    cp $video $ref_video
+fi
+
+if [ -n "$rtp_timestamp_arg" -a "$create_latency_budget_plot" == yes ]; then
+    start_ts_arg=$(./get-min-timestamp --overlay-infile ${OUT}/gst_debug.log \
+                                       --rtp-infile ${OUT}/rtp-src.log)
+    if [ -n "$start_ts_arg" ]; then
+        start_ts_arg="--start-timestamp $start_ts_arg"
+    fi
+fi
+
+if [ -n "$rtp_timestamp_arg" ]; then
+    ./parse-rtp-timestamps --out-dir ${OUT} --pdf --ascii --stats \
+                           ${start_ts_arg} || success=0
+    if [ -n "$crop_stats" ]; then
+        infile=${OUT}/rtp-ts-stats.data
+        firstfile=${OUT}/rtp-ts-stats.first
+        crop_ms=$(echo "$crop_stats * 1000" | bc)
+        ./crop-data-file --column 5 --value $crop_ms \
+                         --first-column 0 --first-file $firstfile \
+                         --stats-column 7 \
+                         $infile
+    fi
+fi
+
+calculate_vqa_metric
+
+for dotfile in ${OUT}/*-gst-launch.PLAYING_PAUSED.dot; do
+    if [ -e $dotfile ]; then
+        dot -O -Tpdf $dotfile || success=0
+    fi
+done
+
+if [ "$ffmpeg_compare" == "yes" ]; then
+    ref_video="${OUT}/ref.${src_ve_ext}"
+    dist_video="${OUT}/dist.${sink_ve_ext}"
+    overlay_comparison_video_output="${OUT}/overlay.mp4"
+    echo Running ffmpeg for combining ${ref_video} and ${dist_video} \
+         into ${overlay_comparison_video_output}
+    ffmpeg -hide_banner -loglevel quiet -y \
+           -i $ref_video -i $dist_video \
+           -filter_complex "[1:v]format=yuva444p,lut=c3=128,negate[video2withAlpha],[0:v][video2withAlpha]overlay[out]" \
+           -map [out] -c:v libx264 -crf 18 \
+           -c:a copy $overlay_comparison_video_output
+
+    ref_nb_frames=$(ffprobe -v error \
+                            -select_streams v:0 \
+                            -count_packets \
+                            -show_entries stream=nb_read_packets \
+                            -of csv=p=0 $ref_video)
+    dist_nb_frames=$(ffprobe -v error \
+                             -select_streams v:0 \
+                             -count_packets \
+                             -show_entries stream=nb_read_packets \
+                             -of csv=p=0 $dist_video)
+fi
+
+echo "{" > $result_json
+if [ "$create_latency_budget_plot" == yes ]; then
+    ./plot-latency-budget -a ${OUT}/gst_debug.log
+    ./plot-time-vs-latency -a -p ${OUT}/gst_debug.log --stats ${start_ts_arg}
+    write_stats "time-vs-latency-stats" ${OUT}/time-vs-latency_stats.txt
+fi
+if [ -n "$rtp_timestamp_arg" ]; then
+    write_stats "rtp-stats" ${OUT}/rtp-ts-stats-overall.txt
+fi
+if [ -n "$crop_stats" ]; then
+    echo '"first-frame-id": ' >> $result_json
+    cat ${OUT}/rtp-ts-stats.first >> $result_json
+    echo "," >> $result_json
+    write_stats "cropped-rtp-stats" ${OUT}/rtp-ts-stats-overall.cropped.txt
+fi
+
+IFS=',' read -ra metrics <<< "$vqa_metric"
+for metric in "${metrics[@]}"; do
+    if [[ "$metric" == @(dssim|dssim-heat-map) ]]; then
+        write_stats "dssim" $OUT/dssim-stats-overall.txt
+        test -n "$crop_stats" && \
+            write_stats "cropped-dssim" ${OUT}/dssim-overall.cropped.txt
+    else
+        write_stats "$metric" $vqmcli_results/$metric-stats-overall.txt
+    fi
+done
+
+if [ -n "$video" ]; then
+    write_videostats "$video"
+fi
+
+if [ -n "$ref_nb_frames" ]; then
+    cat <<EOF >> $result_json
+          "ref_nb_video_frames": $ref_nb_frames,
+EOF
+fi
+if [ -n "$dist_nb_frames" ]; then
+    cat <<EOF >> $result_json
+          "dist_nb_video_frames": $dist_nb_frames,
+EOF
+fi
+if [ -r $OUT/quicsrc.json ]; then
+    echo -n '"quicsrc-stats": ' >> $result_json
+    cat $OUT/quicsrc.json >> $result_json
+    echo "," >> $result_json
+fi
+echo "\"success\": $success }" >> $result_json
+
+if [ $success != 1 ]; then
+    echo "!!!!!!!!!! TEST FAILED !!!!!!!!!!"
+    exit_with_error
+fi

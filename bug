@@ -1,0 +1,27 @@
+#!/bin/bash
+
+set -x
+
+./test-in-screen --bw 1.8 --proto raw-quic --print-stats
+
+echo ======================================================================
+
+./test-in-screen --bw 1.8 --proto raw-quic --print-stats \
+                 --cut-link 1
+
+echo ======================================================================
+
+./test-in-screen --bw 1.8 --proto raw-quic --print-stats \
+                 --cut-link 2
+
+echo ======================================================================
+
+./test-in-screen --bw 1.8 --proto raw-quic --print-stats \
+                 --migration-trigger-size 40000 \
+                 --next-client-address 10.0.0.1:5002
+
+echo ======================================================================
+
+./test-in-screen --bw 1.8 --proto raw-quic --print-stats \
+                 --migration-trigger-size 40000 \
+                 --next-client-address 10.0.0.3:5002

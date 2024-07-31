@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import json
+import os
+import re
+import subprocess
+
+from pathlib import Path
+
+def get_filename(out_dir, basename, postfix=''):
+    return os.path.join(str(Path(out_dir)), basename + postfix)
+
+def log_stats(data_file, out_file, sep=","):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set datafile separator "{sep}"
+      set print "{out_file}"
+      stats "{data_file}" using 2
+      exit
+  """.encode())
+
+def plot(preambulum, data_file, metric, sep=",", labels=True, yrange=None):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  if labels:
+      def_labels = f'''
+        set xlabel "Video frame sequence number"
+        set ylabel "{metric} score"
+      '''
+  else:
+    def_labels = ''
+
+  if yrange is None:
+      yrange = ""
+  else:
+      yrange = f"set yrange {yrange}"
+
+  p.communicate(input=f"""
+    {preambulum}
+    set datafile separator "{sep}"
+    set key off
+    {yrange}
+    {def_labels}
+    plot "{data_file}" using 1:2 w l
+
+    exit
+  """.encode())
+
+def plot_ascii(filename, metric, sep=",", yrange=None):
+  pre = f'''
+     set title "{metric} scores"
+     set term dumb enhanced ansi256
+  '''
+  plot(pre, filename, metric, sep=sep, yrange=yrange)
+
+def plot_pdf(data_file, out_file, metric, sep=",", yrange=None):
+  pre = f'''
+    set term pdf color enhanced
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, metric, sep=sep, yrange=yrange)
+
+def plot_tikz(data_file, out_file, metric, sep=",", yrange=None):
+  pre = f'''
+    set term tikz latex color tikzarrows
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, metric, sep=sep, yrange=yrange)
+
+def process_json_chunk_files(chunk_files, outfile, metric, score_field,
+                             sep=',', header_line=True):
+    frame_id = 1
+    chunk_id = 1
+
+    with open(outfile, "w") as output:
+        if header_line:
+            output.write(sep.join(["frame", f"{metric}_score",
+                                   "chunk", "chunk_frameNum"]))
+            output.write("\n")
+
+        chunks = len(chunk_files)
+        for cf in chunk_files:
+            with open(cf) as chunk_file:
+                try:
+                    chunk = json.load(chunk_file)
+                except json.decoder.JSONDecodeError:
+                    print(f"Cannot parse {cf} as JSON. "
+                          f"Frame IDs might be incorrect in the output "
+                          f"starting at chunk #{chunk_id}, "
+                          f"absolute frame #{frame_id}")
+                    continue
+                frames = chunk["frames"]
+                for frame in frames:
+                    output.write(sep.join([
+                        str(frame_id), str(frame[score_field]),
+                        str(chunk_id), str(frame['frameNum'])]))
+                    output.write("\n")
+                    frame_id += 1
+                chunk_id += 1
+
+def process_key_value_chunk_files(chunk_files, outfile, metric, score_field,
+                                  sep=',', header_line=True):
+    frame_id = 1
+    chunk_id = 1
+
+    with open(outfile, "w") as output:
+        if header_line:
+            output.write(sep.join(["frame", f"{metric}_score",
+                                   "chunk", "chunk_frameNum"]))
+            output.write("\n")
+
+        chunks = len(chunk_files)
+        for cf in chunk_files:
+            with open(cf) as chunk_file:
+                try:
+                    chunk = chunk_file.readlines()
+                except Exception:
+                    print(f"Cannot parse {cf}."
+                          f"Frame IDs might be incorrect in the output "
+                          f"starting at chunk #{chunk_id}, "
+                          f"absolute frame #{frame_id}")
+                    continue
+                for line in chunk:
+                    chunk_frame_num = re.search("^n:[0-9]+", line)
+                    if chunk_frame_num:
+                        chunk_frame_num = line[chunk_frame_num.span()[0]+2:
+                                               chunk_frame_num.span()[1]]
+                    metric_value = re.search(f"{score_field}:[0-9]+.[0-9]+", line)
+                    if metric_value:
+                        metric_value = line[
+                            metric_value.span()[0]+len(score_field)+1:
+                            metric_value.span()[1]]
+                    if chunk_frame_num:
+                        if metric_value:
+                            output.write(sep.join([
+                                str(frame_id), str(metric_value),
+                                str(chunk_id), str(chunk_frame_num)]))
+                            output.write("\n")
+                        frame_id += 1
+                chunk_id += 1
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='')
+    metrics = {"msssim": {"format": "json",
+                          "score_field": "float_ms_ssim"},
+               "psnr": {"format": "key_value",
+                        "score_field": "psnr_avg"},
+               "ssim": {"format": "key_value",
+                        "score_field": "All"},
+               "vif": {"format": "json",
+                       "score_field": "vif_scale3"},
+               "vmaf": {"format": "json",
+                         "score_field": "vmaf",
+                         "yrange": "[-5:105]"}}
+    output_formats = {"csv" : {"name": "csv",
+                               "sep": ",",
+                               "header": True},
+                      "data" : {"name": "data",
+                                "sep": " ",
+                                "header": False}}
+    parser.add_argument(f"--metric",
+                        type=str,
+                        default="vmaf",
+                        help="VQMTK/CLI metric, or comma-separated list of "
+                        "metrics")
+    parser.add_argument("--out-dir",
+                        dest="out_dir",
+                        required=True,
+                        type=str,
+                        help="Dir for reading/writing per frame scores "
+                        "of the selected metric")
+    parser.add_argument(f"--output-format",
+                        dest="output_format",
+                        type=str,
+                        default=output_formats["csv"]["name"],
+                        choices=[output_formats["csv"]["name"],
+                                 output_formats["data"]["name"]],
+                        help="Format of the output file")
+    parser.add_argument('--ascii', '-a',
+                        action='store_true',
+                        help='Print an ascii plot as well')
+    parser.add_argument('--pdf', '-p',
+                        action='store_true',
+                        help='Print a pdf plot')
+    parser.add_argument('--stats', '-s',
+                        action='store_true',
+                        help="Print statistics into a file")
+    parser.add_argument('--tikz', '-t',
+                        action='store_true',
+                        help='Print a tikz plot')
+
+    args = parser.parse_args()
+
+    sep = output_formats[args.output_format]["sep"]
+
+    for metric in args.metric.split(","):
+        metric = metric.strip()
+        if metric not in metrics.keys():
+            print(f"Requested '{metric}' is not supported, options: "
+                  f"{list(metrics.keys())}")
+        metric_dir = os.path.join(args.out_dir, metric)
+        try:
+            chunk_files = [os.path.join(metric_dir, f)
+                           for f in os.listdir(metric_dir) if not "csv" in f]
+        except FileNotFoundError:
+            print(f"No such file or directory: {metric_dir}")
+            exit(-1)
+        if len(chunk_files) == 0:
+            print(f"No {metric} chunk files found in {metric_dir}")
+            exit(-1)
+        chunk_files.sort()
+        out_file = f"{metric}-stats"
+        data_file = get_filename(args.out_dir, out_file,
+                                 f"-per-frame.{args.output_format}")
+        processor_func = f"process_{metrics[metric]['format']}_chunk_files"
+        locals()[processor_func](chunk_files, data_file, metric,
+                                 metrics[metric]['score_field'],
+                                 sep, output_formats[args.output_format]["header"])
+
+        if args.ascii:
+            plot_ascii(data_file, metric, sep, metrics[metric].get('yrange'))
+        if args.pdf:
+            plot_pdf(data_file, get_filename(args.out_dir, out_file, '.pdf'),
+                     metric, sep, metrics[metric].get('yrange'))
+        if args.tikz:
+            plot_tikz(data_file, get_filename(args.out_dir, out_file, '.tex'),
+                      metric, sep, metrics[metric].get('yrange'))
+        if args.stats:
+            log_stats(data_file,
+                      get_filename(args.out_dir, out_file, '-overall.txt'), sep)

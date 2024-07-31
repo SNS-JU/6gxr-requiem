@@ -1,0 +1,493 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "keep-alive",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_360p@30.00fps.mp4",
+          "mode": "stream",
+          "scenario": ["involuntary"],
+          "keepalive": [50, 100, 200, 500, 1000],
+          "crop": 3,
+          "migrateAfter": 0
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp --vqa-metric dssim --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario --crop-stats $crop -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "keep-alive",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_360p@30.00fps.mp4",
+          "mode": "stream",
+          "scenario": ["baseline"],
+          "keepalive": [50],
+          "crop": 3,
+          "migrateAfter": 0
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp --vqa-metric dssim --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario --crop-stats $crop -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+    {
+      "type": "simple",
+      "title": "Keep-alive: Mean Latency [ms]",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["keepalive", "scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: Mean Latency [ms] compared to baseline",
+      "x-axis": "delay",
+      "y-axis": "from_baseline",
+      "error-bar":  "stddev",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": { "delay": "$delay" },
+            "y": { "$push": {"k": {"$concat": ["$scenario",
+                                               "_",
+                                               {"$toString": "$keepalive"}
+                                              ]},
+                             "v": "$avg_mean"} },
+            "dev": { "$push": {"k": {"$concat": ["$scenario",
+                                                 "_",
+                                                 {"$toString": "$keepalive"}
+                                                ]},
+                               "v": "$stddev_mean"} }
+          }
+        },
+        {
+          "$project": {
+            "delay": "$_id.delay",
+            "y": {"$arrayToObject": "$y"},
+            "dev": {"$arrayToObject": "$dev"}
+          }
+        },
+        {
+          "$addFields": {
+            "from_baseline": {
+              "$map": {
+                "input": {"$objectToArray": "$y"},
+                "as": "y",
+                "in": {
+                  "k": "$$y.k",
+                  "v": { "$subtract": ["$$y.v",
+                                       "$$ROOT.y.baseline_50"] }
+                }
+              }
+            }
+          }
+        },
+        { "$unwind": "$from_baseline" },
+        {
+          "$project": {
+            "delay": 1,
+            "dev": {
+              "$first" : {
+                "$filter": {
+                  "input": {"$objectToArray": "$dev"},
+                  "as": "this",
+                  "cond": {"$eq": ["$$this.k", "$$ROOT.from_baseline.k"]}
+                }
+              }
+            },
+            "scenario": "$from_baseline.k",
+            "from_baseline": "$from_baseline.v"
+          }
+        },
+        { "$addFields": { "stddev": "$dev.v"} },
+        { "$sort": {"delay": 1, "scenario": 1} }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: Mean Latency [ms] divided by baseline",
+      "x-axis": "delay",
+      "y-axis": "from_baseline",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": { "delay": "$delay" },
+            "y": { "$push": {"k": {"$concat": ["$scenario",
+                                               "_",
+                                               {"$toString": "$keepalive"}
+                                              ]},
+                             "v": "$avg_mean"} },
+            "dev": { "$push": {"k": {"$concat": ["$scenario",
+                                                 "_",
+                                                 {"$toString": "$keepalive"}
+                                                ]},
+                               "v": "$stddev_mean"} }
+          }
+        },
+        {
+          "$project": {
+            "delay": "$_id.delay",
+            "y": {"$arrayToObject": "$y"},
+            "dev": {"$arrayToObject": "$dev"}
+          }
+        },
+        {
+          "$addFields": {
+            "from_baseline": {
+              "$map": {
+                "input": {"$objectToArray": "$y"},
+                "as": "y",
+                "in": {
+                  "k": "$$y.k",
+                  "v": { "$divide": ["$$y.v",
+                                       "$$ROOT.y.baseline_50"] }
+                }
+              }
+            }
+          }
+        },
+        { "$unwind": "$from_baseline" },
+        {
+          "$project": {
+            "delay": 1,
+            "dev": {
+              "$first" : {
+                "$filter": {
+                  "input": {"$objectToArray": "$dev"},
+                  "as": "this",
+                  "cond": {"$eq": ["$$this.k", "$$ROOT.from_baseline.k"]}
+                }
+              }
+            },
+            "scenario": "$from_baseline.k",
+            "from_baseline": "$from_baseline.v"
+          }
+        },
+        { "$addFields": { "stddev": "$dev.v"} },
+        { "$sort": {"delay": 1, "scenario": 1} }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: CROPPED Mean Latency [ms]",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["keepalive", "scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.cropped-rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.cropped-rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.cropped-median_y"},
+            "stddev_median": {"$stdDevPop": "$out.cropped-rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: CROPPED Mean Latency [ms] compared to baseline",
+      "x-axis": "delay",
+      "y-axis": "from_baseline",
+      "error-bar":  "stddev",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.cropped-rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.cropped-rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.cropped-rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.cropped-rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": { "delay": "$delay" },
+            "y": { "$push": {"k": {"$concat": ["$scenario",
+                                               "_",
+                                               {"$toString": "$keepalive"}
+                                              ]},
+                             "v": "$avg_mean"} },
+            "dev": { "$push": {"k": {"$concat": ["$scenario",
+                                                 "_",
+                                                 {"$toString": "$keepalive"}
+                                                ]},
+                               "v": "$stddev_mean"} }
+          }
+        },
+        {
+          "$project": {
+            "delay": "$_id.delay",
+            "y": {"$arrayToObject": "$y"},
+            "dev": {"$arrayToObject": "$dev"}
+          }
+        },
+        {
+          "$addFields": {
+            "from_baseline": {
+              "$map": {
+                "input": {"$objectToArray": "$y"},
+                "as": "y",
+                "in": {
+                  "k": "$$y.k",
+                  "v": { "$subtract": ["$$y.v",
+                                       "$$ROOT.y.baseline_50"] }
+                }
+              }
+            }
+          }
+        },
+        { "$unwind": "$from_baseline" },
+        {
+          "$project": {
+            "delay": 1,
+            "dev": {
+              "$first" : {
+                "$filter": {
+                  "input": {"$objectToArray": "$dev"},
+                  "as": "this",
+                  "cond": {"$eq": ["$$this.k", "$$ROOT.from_baseline.k"]}
+                }
+              }
+            },
+            "scenario": "$from_baseline.k",
+            "from_baseline": "$from_baseline.v"
+          }
+        },
+        { "$addFields": { "stddev": "$dev.v"} },
+        { "$sort": {"delay": 1, "scenario": 1} }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: CROPPED Mean Latency [ms] divided by baseline",
+      "x-axis": "delay",
+      "y-axis": "from_baseline",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.cropped-rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.cropped-rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.cropped-rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.cropped-rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": { "delay": "$delay" },
+            "y": { "$push": {"k": {"$concat": ["$scenario",
+                                               "_",
+                                               {"$toString": "$keepalive"}
+                                              ]},
+                             "v": "$avg_mean"} },
+            "dev": { "$push": {"k": {"$concat": ["$scenario",
+                                                 "_",
+                                                 {"$toString": "$keepalive"}
+                                                ]},
+                               "v": "$stddev_mean"} }
+          }
+        },
+        {
+          "$project": {
+            "delay": "$_id.delay",
+            "y": {"$arrayToObject": "$y"},
+            "dev": {"$arrayToObject": "$dev"}
+          }
+        },
+        {
+          "$addFields": {
+            "from_baseline": {
+              "$map": {
+                "input": {"$objectToArray": "$y"},
+                "as": "y",
+                "in": {
+                  "k": "$$y.k",
+                  "v": { "$divide": ["$$y.v",
+                                       "$$ROOT.y.baseline_50"] }
+                }
+              }
+            }
+          }
+        },
+        { "$unwind": "$from_baseline" },
+        {
+          "$project": {
+            "delay": 1,
+            "dev": {
+              "$first" : {
+                "$filter": {
+                  "input": {"$objectToArray": "$dev"},
+                  "as": "this",
+                  "cond": {"$eq": ["$$this.k", "$$ROOT.from_baseline.k"]}
+                }
+              }
+            },
+            "scenario": "$from_baseline.k",
+            "from_baseline": "$from_baseline.v"
+          }
+        },
+        { "$addFields": { "stddev": "$dev.v"} },
+        { "$sort": {"delay": 1, "scenario": 1} }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: Mean DSSIM",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["keepalive", "scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.dssim.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.dssim.mean_y"},
+            "avg_median": {"$avg": "$out.dssim.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.dssim.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Keep-alive: CROPPED Mean DSSIM",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["keepalive", "scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "keep-alive" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.scenario",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "avg_mean": {"$avg": "$out.cropped-dssim.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.cropped-dssim.mean_y"},
+            "avg_median": {"$avg": "$out.cropped-dssim.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.cropped-dssim.median_y"}
+          }
+        }
+      ]
+    }
+  ]
+}

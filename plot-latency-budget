@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import heapq
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+def parse_file(file_obj):
+  latencies = []
+  frame_ids = {}
+  max_id = 1
+  min_id = None
+
+  for line in file_obj:
+    m = re.search(" Latency: ([0-9:.-]+); Frame-id: ([0-9]+)", line)
+    if not m:
+      continue
+    latency, frame_id = int(m.group(1)), int(m.group(2))
+    latency_ms = latency / 1000000.0
+    if frame_id > 5000:
+      # misread
+      print(f"misread frame: {frame_id}", file=sys.stderr)
+      frame_id = None
+    if frame_id and frame_id in frame_ids:
+      print(f"repeated frame: {frame_id}", file=sys.stderr)
+      continue
+    if latency_ms < 0:
+      # absolute clock is not yet set up
+      continue
+    frame_ids[frame_id] = latency_ms
+    heapq.heappush(latencies, latency_ms)
+    if frame_id:
+      min_id = min_id or frame_id
+      max_id = max(max_id, int(frame_id))
+
+  if min_id:
+    return latencies, frame_ids, (1 + max_id - min_id)
+
+  print("No valid timestamps found", file=sys.stderr)
+  exit(-1)
+
+def write_data(timestamps, nb_frames, file_obj):
+  count = 0
+  while timestamps:
+    latency_ms = heapq.heappop(timestamps)
+    count += 1
+    file_obj.write(f"{latency_ms} {count/nb_frames}\n")
+
+def plot_ascii(filename):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set term dumb enhanced ansi256
+      set key off
+      plot "{filename}" using 1:2 with line
+      exit
+  """.encode())
+
+
+if __name__ == "__main__":
+  parser = argparse.ArgumentParser()
+  parser.add_argument('infile', type=argparse.FileType('r'))
+  parser.add_argument('--out-basename', '-o', type=str,
+                      default='latency-budget',
+                      help="Output filename without extesion")
+  parser.add_argument('--out-dir', type=str,
+                      help="Dir to put results into. Default: next to INFILE.")
+  parser.add_argument('--ascii', '-a', action='store_true',
+                      help='Print an ascii plot as well')
+  parser.add_argument('--pdf', '-p', action='store_true',
+                      help='Print a pdf plot')
+  args = parser.parse_args()
+  latencies, frame_ids, nb_frames = parse_file(args.infile)
+  if args.out_dir:
+    out_dir = Path(args.out_dir)
+  else:
+    out_dir = Path(args.infile.name).parent
+  datafile = out_dir / (args.out_basename + '.data')
+  with datafile.open('w') as out:
+    write_data(latencies, nb_frames, out)
+  if args.ascii:
+    plot_ascii(datafile)
+  if args.pdf:
+    plot_pdf(datafile, out_dir / (args.out_basename + '.pdf'))

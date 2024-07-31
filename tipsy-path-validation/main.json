@@ -1,0 +1,318 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "bw": 4,
+          "mode": ["datagram", "stream"],
+          "delay": [5, 50, 150, 250, 350],
+          "keepalive": [100],
+          "validation": ["normal", "skip"]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 -s none --proto raw-quic --next-client-address 10.0.2.1:5002 --migration-trigger-size 1000000 --rtp-timestamp --result $PWD/result.json -- --keepalive $keepalive $datagram --initial-window 2400000 --validation $validation"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+    {
+      "type": "table",
+      "x-axis": "out.test-id",
+      "y-axis": "out.success",
+      "title": "unsuccessfully completed",
+      "aggregate": [
+        { "$match": {"out.success": {"$not": 1} } }
+      ]
+    },
+    {
+      "title": "Latency in case of two pre-validation strategies (random examples) (delay: {delay}ms, datagram)",
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "group-by": ["validation"],
+      "aggregate": [
+        {
+          "$match": {
+            "tester.environ.mode": "datagram",
+            "tester.environ.repeat": 4,
+            "tester.environ.delay": 250
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+    },
+    {
+      "title": "Latency in case of two pre-validation strategies (random examples) (delay: {delay}ms, datagram)",
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "group-by": ["validation"],
+      "aggregate": [
+        {
+          "$match": {
+            "tester.environ.mode": "datagram",
+            "tester.environ.repeat": 2,
+            "tester.environ.delay": 50
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Latency (every measurement, delay: 350ms)",
+      "group-by": ["tester.environ.validation", "tester.environ.mode"],
+      "filter": {"tester.environ.delay": 350},
+      "x-axis": "tester.environ.repeat",
+      "y-axis": ["out.rtp-stats.mean_y", "out.rtp-stats.median_y"]
+    },
+    {
+      "type": "table",
+      "title": "Latency (averaged results, delay: {delay}ms)",
+      "x-axis": "validation",
+      "y-axis": ["avg_mean", "stddev_mean", "avg_median", "stddev_median"],
+      "aggregate": [
+        { "$match": { "tester.environ.delay": 350 } },
+        { "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Mean Latency [ms]",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["validation", "mode"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation",
+              "delay": "$tester.environ.delay",
+              "mode": "$tester.environ.mode"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "pre-validation / normal (mean latency)",
+      "x-axis": "delay",
+      "y-axis": "ratio",
+      "group-by": "mode",
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation",
+              "delay": "$tester.environ.delay",
+              "mode": "$tester.environ.mode"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$delay",
+              "mode": "$mode"
+            },
+            "delay": {"$first": "$delay"},
+            "mode": {"$first": "$mode"},
+            "skip": {
+              "$filter": {
+                "input": "$$CURRENT",
+                "as": "this",
+                "cond": {"$eq": ["$validation", "skip"]}
+              }
+            },
+            "normal": {
+              "$filter": {
+                "input": "$$CURRENT",
+                "as": "this",
+                "cond": {"$eq": ["$validation", "normal"]}
+              }
+            }
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$delay",
+              "mode": "$mode"
+            },
+            "delay": {"$first": "$delay"},
+            "mode": {"$first": "$mode"},
+            "ratio": {
+              "$divide": [
+                {"$getField": {
+                  "input": {"$first": {"$first": "$skip"}},
+                  "field": "avg_mean"
+                }},
+                {"$getField": {
+                  "input": {"$first": {"$first": "$normal"}},
+                  "field": "avg_mean"
+                }}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "pre-validation / normal (median latency)",
+      "x-axis": "delay",
+      "y-axis": "ratio",
+      "group-by": "mode",
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation",
+              "delay": "$tester.environ.delay",
+              "mode": "$tester.environ.mode"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$delay",
+              "mode": "$mode"
+            },
+            "delay": {"$first": "$delay"},
+            "mode": {"$first": "$mode"},
+            "skip": {
+              "$filter": {
+                "input": "$$CURRENT",
+                "as": "this",
+                "cond": {"$eq": ["$validation", "skip"]}
+              }
+            },
+            "normal": {
+              "$filter": {
+                "input": "$$CURRENT",
+                "as": "this",
+                "cond": {"$eq": ["$validation", "normal"]}
+              }
+            }
+          }
+        },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$delay",
+              "mode": "$mode"
+            },
+            "delay": {"$first": "$delay"},
+            "mode": {"$first": "$mode"},
+            "ratio": {
+              "$divide": [
+                {"$getField": {
+                  "input": {"$first": {"$first": "$skip"}},
+                  "field": "avg_median"
+                }},
+                {"$getField": {
+                  "input": {"$first": {"$first": "$normal"}},
+                  "field": "avg_median"
+                }}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "Median Latency [ms]",
+      "x-axis": "delay",
+      "y-axis": "avg_median",
+      "error-bar":  "stddev_median",
+      "group-by": ["validation", "mode"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "validation": "$tester.environ.validation",
+              "delay": "$tester.environ.delay",
+              "mode": "$tester.environ.mode"
+            },
+            "validation": {"$first": "$tester.environ.validation"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "mode": {"$first": "$tester.environ.mode"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import json
+import os
+import re
+import subprocess
+
+from pathlib import Path
+
+def get_filename(out_dir, basename, postfix=''):
+    return os.path.join(str(Path(out_dir)), basename + postfix)
+
+def log_stats(data_file, out_file, sep=","):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set datafile separator "{sep}"
+      set print "{out_file}"
+      stats "{data_file}" using 3
+      exit
+  """.encode())
+
+def plot(preambulum, data_file, metric, sep=",", labels=True, yrange=None):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  if labels:
+      def_labels = f'''
+        set xlabel "Video frame sequence number"
+        set ylabel "{metric} score"
+      '''
+  else:
+    def_labels = ''
+
+  if yrange is None:
+      yrange = ""
+  else:
+      yrange = f"set yrange {yrange}"
+
+  p.communicate(input=f"""
+    {preambulum}
+    set datafile separator "{sep}"
+    set key off
+    {yrange}
+    {def_labels}
+    plot "{data_file}" using 1:3 w l
+
+    exit
+  """.encode())
+
+def plot_ascii(filename, metric, sep=",", yrange=None):
+  pre = f'''
+     set title "{metric} scores"
+     set term dumb enhanced ansi256
+  '''
+  plot(pre, filename, metric, sep=sep, yrange=yrange)
+
+def plot_pdf(data_file, out_file, metric, sep=",", yrange=None):
+  pre = f'''
+    set term pdf color enhanced
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, metric, sep=sep, yrange=yrange)
+
+def plot_tikz(data_file, out_file, metric, sep=",", yrange=None):
+  pre = f'''
+    set term tikz latex color tikzarrows
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, metric, sep=sep, yrange=yrange)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='')
+    parser.add_argument("--out-dir",
+                        dest="out_dir",
+                        required=True,
+                        type=str,
+                        help="Dir for reading/writing per frame scores "
+                        "of the selected metric")
+    parser.add_argument('--ascii', '-a',
+                        action='store_true',
+                        help='Print an ascii plot as well')
+    parser.add_argument('--pdf', '-p',
+                        action='store_true',
+                        help='Print a pdf plot')
+    parser.add_argument('--stats', '-s',
+                        action='store_true',
+                        help="Print statistics into a file")
+    parser.add_argument('--tikz', '-t',
+                        action='store_true',
+                        help='Print a tikz plot')
+
+    args = parser.parse_args()
+    sep = " "
+    metric = "dssim"
+    out_file = f"{metric}-stats"
+    data_file = get_filename(args.out_dir, f"{metric}.data")
+    if args.ascii:
+        plot_ascii(data_file, metric, sep)
+    if args.pdf:
+        plot_pdf(data_file, get_filename(args.out_dir, out_file, '.pdf'),
+                 metric, sep)
+    if args.tikz:
+        plot_tikz(data_file, get_filename(args.out_dir, out_file, '.tex'),
+                  metric, sep)
+    if args.stats:
+        log_stats(data_file,
+                  get_filename(args.out_dir, out_file, '-overall.txt'), sep)

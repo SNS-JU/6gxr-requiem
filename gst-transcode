@@ -1,0 +1,241 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+function gst_discover_param () {
+    vid="$1"
+    param="$2"
+    value=$(gst-discoverer-1.0 $(realpath $vid) | \
+                grep "${param}" | \
+                sed -e "s/${param}:\s//g" | tr -d ' ')
+    if [ -z "$value" ]; then
+        echo Error: Cannot determine "$param" of video: "$vid" 1>&2
+        if [ -z "$(which gst-discoverer-1.0)" ]; then
+            echo Try: apt install gstreamer1.0-plugins-base-apps 1>&2
+        fi
+        exit -1
+    fi
+    echo $value
+}
+
+# ========================================================================
+
+# Parse CLI args
+
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --discover)
+      stats=yes
+      shift
+      ;;
+    --dry-run)
+      dry_run=yes
+      shift
+      ;;
+    --framerate)
+      framerate="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage=yes
+      shift
+      ;;
+    --h264-bitrate)
+      h264_bitrate="$2"
+      shift 2
+      ;;
+    --h264-key-int-max)
+      h264_key_int_max="$2"
+      shift 2
+      ;;
+    --h264-profile)
+      h264_profile="$2"
+      shift 2
+      ;;
+    --h264-zerolatency)
+      h264_zerolatency=yes
+      shift
+      ;;
+    --num-buffers)
+      num_buffers="$2"
+      shift 2
+      ;;
+    --resolution)
+      case "$2" in
+        2160p)
+          width=4096
+          height=2160
+          resolution=2160p
+          ;;
+        1440p)
+          width=2560
+          height=1440
+          resolution=1440p
+          ;;
+        1080p)
+          width=1920
+          height=1080
+          resolution=1080p
+          ;;
+        720p)
+          width=1280
+          height=720
+          resolution=720p
+          ;;
+        360p)
+          width=640
+          height=360
+          resolution=360p
+          ;;
+        *)
+          echo Resolution: "$2"
+          usage=yes
+      esac
+      shift 2
+      ;;
+    --prefix)
+      prefix="$2"
+      shift 2
+      ;;
+    --video)
+      video="$2"
+      shift 2
+      ;;
+    -*|--*)
+      echo "Unknown option $1"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+# ========================================================================
+
+if [ -z "$video" ]; then
+    echo video needs to be set
+    usage=yes
+fi
+
+if [ "$usage" == "yes" ]; then
+    echo $0 [options]
+    cat <<-EOF
+    --discover      Run gst-discoverer-1.0 on the output video and count
+                    I-frames with ffprobe when available
+    --dry-run       Only print the GStreamer pipeline do not run
+    --framerate RATE
+                    Frame rate of the output video in the form of X/Y
+    --help          Display this help
+    --h264-bitrate N
+                    Bitrate in kbit/sec
+    --h264-key-int-max N
+                    Maximum number of video frames between two I-frames
+                    in the output video
+    --h264-profile PROFILE
+                    Encoder profile, see documentation of the x264enc
+                    GStreamer element (some possible options: baseline,
+                    main, high)
+    --h264-zerolatency
+                    Use h264 zerolatency tune
+    --num-buffers N Process the input video until reaching N GStreamer
+                    buffers
+    --resolution <2160p | 1440p | 1080p | 720p | 360p>
+                    Resolution of the output video
+                    List available scenarios
+    --prefix PREFIX PREFIX of the output video
+    --video FILE    Input video
+EOF
+    exit 0
+fi
+
+# ========================================================================
+
+if [ -z "$prefix" ]; then
+    prefix=$(basename -s .mp4 ${video})
+fi
+
+if [ -z "$framerate" ]; then
+    framerate=$(gst_discover_param $video "Frame rate") || exit
+    echo "Discovered frame rate: $framerate"
+fi
+
+IFS='/' read -ra mra <<< "$framerate"
+float_rate=$(echo "scale=2; ${mra[0]} / ${mra[1]}" | bc)
+max_rate=$(echo "$float_rate" | LC_ALL=C xargs /usr/bin/printf "%.*f\n" 0)
+echo "Using frame rate: ${float_rate}, max rate: $max_rate"
+
+if [ -z "$width" ]; then
+    width=$(gst_discover_param $video "Width") || exit
+    echo "Discovered width: $width"
+fi
+origin_height=$(gst_discover_param $video "Height") || exit
+if [ -z "$height" ]; then
+    height=$origin_height
+    # This is true only when the source has a progressive format too
+    resolution="${height}p"
+    echo "Discovered height: $height"
+fi
+
+src="filesrc location=${video}"
+if [ -n "$num_buffers" ]; then
+    src+=" num-buffers=${num_buffers}"
+fi
+src+=" ! decodebin"
+
+convert="videorate skip-to-first=true max-rate=${max_rate}"
+convert+=" ! video/x-raw,framerate=${framerate} ! videoconvert"
+if [ "$height" -ne "$origin_height" ]; then
+    convert+=" ! videoscale ! video/x-raw,width=${width},height=${height}"
+    convert+=" ! videoconvert"
+fi
+convert+=" ! x264enc"
+if [ -n "$h264_bitrate" ]; then
+    convert+=" bitrate=${h264_bitrate}"
+    bitrate="_bitrate-${h264_bitrate}"
+fi
+if [ "$h264_zerolatency" == yes ]; then
+    convert+=" tune=zerolatency"
+    zerolatency="_zerolatency"
+fi
+if [ -n "$h264_key_int_max" ]; then
+    convert+=" key-int-max=${h264_key_int_max}"
+    key_int="_key-int-${h264_key_int_max}"
+fi
+if [ -n "$h264_profile" ]; then
+    convert+=" ! video/x-h264,profile=${h264_profile}"
+    profile="_profile-${h264_profile}"
+fi
+if [ "$h264_zerolatency" == yes ] || [ -n "$h264_key_int_max" ] || [ -n "$h264_profile" ]; then
+    convert+=" ! h264parse config-interval=-1"
+fi
+
+outfile="${prefix}_${resolution}@${float_rate}fps${bitrate}${profile}${zerolatency}${key_int}.mp4"
+sink="qtmux ! filesink location=${outfile}"
+
+gst="gst-launch-1.0 ${src} ! ${convert} ! ${sink}"
+
+if [ "$dry_run" == yes ]; then
+    echo $gst
+else
+    $gst
+fi
+
+if [ "$stats" == yes ]; then
+    gst-discoverer-1.0 $outfile
+
+    if command -v ffprobe &> /dev/null
+    then
+        key_frame_nb=$(ffprobe -loglevel error \
+                               -select_streams v:0 \
+                               -show_entries packet=pts_time,flags \
+                               -of csv=print_section=0 \
+                               $outfile \
+                           | awk -F',' '/K/ {print $1}' | wc -l)
+        echo "Number of I-frames in the transcoded video: $key_frame_nb"
+    fi
+fi

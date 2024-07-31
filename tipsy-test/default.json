@@ -1,0 +1,13 @@
+{
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {
+      "type": "generic",
+      "environ": {},
+      "script": "echo '--measure' > conf"
+    },
+    "tester": {"type": "generic"},
+    "traffic": {}
+  }
+}

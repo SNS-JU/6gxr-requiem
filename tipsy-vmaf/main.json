@@ -1,0 +1,885 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "delay": [50, 150, 250, 350],
+          "keepalive": 100,
+          "datagram": ["--use-datagram"],
+          "proto": "udp",
+          "scenario": "none",
+          "repeat": [1]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --scenario $scenario --proto $proto --result $PWD/result.json --vmaf --rtp-timestamp -- --timeout 15"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "delay": [50, 150, 250, 350],
+          "keepalive": 100,
+          "datagram": ["--use-datagram", ""],
+          "proto": "raw-quic",
+          "scenario": "none",
+          "repeat": [1]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --scenario $scenario --proto $proto --result $PWD/result.json --vmaf --rtp-timestamp -- $datagram"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "delay": [50, 150, 250, 350],
+          "keepalive": 100,
+          "datagram": ["--use-datagram", ""],
+          "proto": "raw-quic",
+          "scenario": "involuntary",
+          "cutlink": 4,
+          "repeat": [1]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --scenario $scenario --cut-link $cutlink --proto $proto --result $PWD/result.json --vmaf --rtp-timestamp -- $datagram --keepalive $keepalive"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "delay": [50, 150, 250, 350],
+          "keepalive": 100,
+          "datagram": ["--use-datagram", ""],
+          "proto": "raw-quic",
+          "scenario": "planned",
+          "cutlink": 9,
+          "migrationtriggersize": 1000000,
+          "repeat": [1]
+        },
+        "script": "../../../test-in-screen --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --scenario $scenario --next-client-address 10.0.2.1:5002 --migration-trigger-size $migrationtriggersize --cut-link $cutlink --proto $proto --result $PWD/result.json --vmaf --rtp-timestamp -- $datagram --keepalive $keepalive"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (all cases)",
+      "group-by": ["datagram", "scenario", "delay", "proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay",
+              "proto": "$tester.environ.proto"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario})",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "udp" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "udp" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "udp" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "none" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "involuntary" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "VMAF-score",
+      "datafile": "../../measurements/{id}/vqmcli-results/vmaf-stats-per-frame.data",
+      "title": "VMAF score (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "VMAF-score": 1
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "video-frame-seq-num",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "video-frame-seq-num": 0,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, datagram ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "datafile",
+      "x-axis": "sender-rel-ts-ms",
+      "y-axis": "latency-ms",
+      "datafile": "../../measurements/{id}/rtp-ts-stats.data",
+      "title": "RTP latency (protocol: {proto}, scenario: {scenario}, stream ['{datagram}'])",
+      "group-by": ["datagram", "scenario", "delay"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.scenario": "planned" } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "scenario": "$tester.environ.scenario",
+              "delay": "$tester.environ.delay"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.scenario"},
+            "proto": {"$first": "$tester.environ.proto"},
+            "id": {"$first": "$out.test-id"},
+            "sender-rel-ts-ms": 5,
+            "latency-ms": 6
+          }
+        }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.median_y", "out.vmaf-stats.mean_y" ],
+      "title": "Mean and median VMAF score (proto: {tester.environ.proto})",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "udp" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y", "out.rtp-stats.mean_y" ],
+      "title": "Mean and median RTP latency (proto:  {tester.environ.proto})",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "udp" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.median_y", "out.vmaf-stats.mean_y" ],
+      "title": "Mean and median VMAF score (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y", "out.rtp-stats.mean_y" ],
+      "title": "Mean and median RTP latency (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.median_y"],
+      "title": "Median VMAF score (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.mean_y" ],
+      "title": "Mean VMAF score (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y"],
+      "title": "Median RTP latency (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.mean_y" ],
+      "title": "Mean RTP latency (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y"],
+      "title": "Median RTP latency (all {tester.environ.proto} cases)",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.median_y" ],
+      "title": "Median VMAF score (proto: {tester.environ.proto}, datagram ['{tester.environ.datagram}'])",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y" ],
+      "title": "Median RTP latency (proto: {tester.environ.proto}, datagram ['{tester.environ.datagram}'])",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.datagram": "--use-datagram" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.vmaf-stats.median_y"],
+      "title": "Median VMAF score (proto: {tester.environ.proto}, stream ['{tester.environ.datagram}'])",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   },
+   {
+      "type": "simple",
+      "x-axis": "tester.environ.delay",
+      "y-axis": [ "out.rtp-stats.median_y"],
+      "title": "Median RTP latency (proto: {tester.environ.proto}, stream ['{tester.environ.datagram}'])",
+      "group-by": ["tester.environ.datagram", "tester.environ.scenario", "tester.environ.proto"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 } },
+        { "$match": { "tester.environ.datagram": "" } },
+        { "$match": { "tester.environ.proto": "raw-quic" } }
+      ]
+   }
+  ]
+}

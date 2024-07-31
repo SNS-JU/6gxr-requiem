@@ -1,0 +1,123 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# Used to switch to the wired connection when plugging in the cable.
+
+# More important parts: get_ip_addresses(), detection of interface
+# state change via ip monitor link at around the end of the file.
+
+# Default values
+
+ifname=wlan0
+interval=0.5
+threshold=50
+
+# ========================================================================
+
+function get_ip_addresses () {
+    # If ifname is not given, show all addresses
+    ifname=$1
+
+    ip --json a show $ifname | \
+        jq -r -C '.[] | select(.link_type!="loopback")
+                      | .addr_info[] | select(.family=="inet")
+                      | .local'
+}
+
+# ========================================================================
+
+# Parse CLI args, https://stackoverflow.com/a/14203146
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -a|--addr)
+            addr="$2"
+            shift
+            ;;
+        -h|--help)
+            usage=yes
+            shift
+            ;;
+        -i|--interface)
+            ifname="$2"
+            shift 2
+            ;;
+        -n|--interval)
+            interval="$2"
+            shift 2
+            ;;
+        --test)
+            test=yes
+            shift
+            ;;
+        -t|--threshold)
+            threshold="$2"
+            shift 2
+            ;;
+        -*|--*)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift # past argument
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+# ========================================================================
+
+if [ "$usage" == "yes" ]; then
+    echo Usage: $(basename $0) [options]
+    cat <<-EOF
+ -a, --addr ADDR        Ip addr to migrate to
+ -h, --help             Display this help
+ -i, --interface IFNAME Watch interface IFNAME (default: wlan0)
+ -n, --interval TIME    Sleep TIME after querying the device
+     --test             Artificially decrease quality more and more
+ -t, --threshold T      Migrate if wireless quality is less than T. (0<T<100)
+EOF
+    exit 0
+fi
+
+function set_addr () {
+    # while [ -z "$addr" ]; do
+    #     echo Trying to get addr of $ifname
+    #     if_addr=$(get_ip_addresses $ifname)
+    #     if [ -z "$if_addr" ]; then
+    #         echo "Cannot figure out the address of $ifname.  Use --interface"
+    #     else
+    #         echo $ifname: $if_addr
+    #         for candidate in $(get_ip_addresses); do
+    #             if [ "$if_addr" != "$candidate" ]; then
+    #                 addr="$candidate"
+    #                 break
+    #             fi
+    #         done
+    #     fi
+    #     sleep "$interval"
+    # done
+    # ip addr add $addr/24 dev $ifname
+    # ip route add default via 10.222.222.1 dev $ifname
+    echo -n
+}
+echo "Migrating if $ifname becomes UP"
+
+i=0
+ip monitor link | while read line; do
+    echo $line
+    if $(echo $line | grep -q -E "$ifname.*LOWER_UP"); then
+        echo "$ifname appeared: migrating"
+        set_addr
+        sudo ip route add 192.168.123.0/24 via 192.168.49.1 metric 100
+        sudo ip route add 192.168.123.0/24 via 10.222.222.1 metric 200
+        sudo ip rule add from 10.222.222.3 lookup 50
+        sudo ip route add 192.168.123.0/24 via 10.222.222.1 table 50
+        set -x
+        dbus-send --print-reply --dest=org.freedesktop.gst /quic org.freedesktop.gst.Rebind string:"$addr:5002"
+        exit
+    fi
+done

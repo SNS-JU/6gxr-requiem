@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# Default values
+
+selector=app=rawquic-server
+
+# Parse CLI args, https://stackoverflow.com/a/14203146
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            usage=yes
+            shift
+            ;;
+        -s|--selector)
+            selector="$2"
+            shift 2
+            ;;
+        --skip-client-addr)
+            skip_client_addr=yes
+            shift
+            ;;
+        -*|--*)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1") # save positional arg
+            shift # past argument
+            ;;
+    esac
+done
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+config="$1"
+
+if [ ! -e "$config" ]; then
+    echo -e "Config-file not found: $config\n"
+    usage=yes
+fi
+
+# ========================================================================
+
+if [ "$usage" == "yes" ]; then
+    cat <<-EOF
+  Usage: $(basename $0) [options] config-file
+
+  Update a configuration file containing cli arguments for
+  test-in-screen.  It extracts k8s-config, queries selector
+  $selector and updates k8s-pod and server.
+
+  --help             Display this help
+  -s, --selector S   Query S instead of $selector
+  --skip-client-addr Do not update client addr
+                     (using --client-ifname)
+EOF
+    exit 0
+fi
+
+# ========================================================================
+
+function get_value() {
+    local file=$1
+    local var=$2
+    sed -n -E "s/.*$var\s+(\S+).*/\1/p" $file
+}
+
+function update_arg () {
+    local file=$1
+    local var=$2
+    local val=$3
+    sed -i -E "s/($var\s+\S+)/$var $val/" $file
+}
+
+# ========================================================================
+
+kubeconfig=$(get_value $config --k8s-config)
+if [ -r "$kubeconfig" ]; then
+    echo kubeconfig: $kubeconfig
+else
+    echo cannot extract kubeconfig from $config: $kubeconfig
+    exit
+fi
+
+ip=$(kubectl --kubeconfig $kubeconfig get svc -l $selector \
+             -o jsonpath={.items[0].status.loadBalancer.ingress[0].ip})
+if $(echo "$ip"| grep -q -E "^[.0-9]+$"); then
+    port=$(kubectl --kubeconfig $kubeconfig get svc -l $selector \
+                   -o jsonpath={.items[0].spec.ports[0].port})
+    external_port=$port
+else
+    echo cannot indentify external IP of service "($selector)"
+    nodePort=$(kubectl --kubeconfig $kubeconfig get svc -l $selector \
+                       -o jsonpath={.items[0].spec.ports[0].nodePort})
+    #clusterIP=$(kubectl --kubeconfig $kubeconfig get svc -l $selector \
+    #                    -o jsonpath={.items[0].spec.clusterIP})
+
+    #ip=$(sed -nE '/server:/s/[^0-9]*([.0-9]*).*/\1/p' $kubeconfig)
+
+    ip=$(get_value $config --server)
+    external_port=$nodePort
+    if ! $(echo "$ip"| grep -q -E "^[.0-9]+$"); then
+        echo cannot get ip from $config "($ip)"
+        exit 1
+    fi
+fi
+echo ip-addr: $ip
+echo server-external-port: $external_port
+
+pod=$(kubectl --kubeconfig $kubeconfig get pod -l $selector -o name)
+pod=$(echo "$pod"|sed -e "s/^pod\///")
+if [ -n "$pod" ]; then
+    echo pod=$pod
+else
+    echo cannot find pod name for selector $selector
+    exit
+fi
+update_arg $config --server $ip
+update_arg $config --k8s-pod $pod
+update_arg $config --server-external-port $external_port
+
+
+client_ifname=$(get_value $config --client-ifname)
+if [ -n "$client_ifname" -a "$skip_client_addr" != "yes" ]; then
+    client_addr=$(ip --json a \
+                  | jq -r -C ".[] | select(.ifname==\"$client_ifname\")
+                     | .addr_info[] | select(.family==\"inet\")
+                     | .local")
+    echo client-addr: $client_addr
+    update_arg $config --client $client_addr
+fi
+
+echo
+cat $config

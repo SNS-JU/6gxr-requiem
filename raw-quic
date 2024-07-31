@@ -1,0 +1,173 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# https://pixabay.com/videos/cheetah-wild-animal-predator-animal-53486/
+
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+cd "$SCRIPT_DIR"
+
+# Default values
+
+addr=10.0.3.1
+initial_window=0
+keepalive_arg=""
+migration_trigger_size=0
+mode=stream
+next_client_address=0.0.0.0:5002
+relative_initial_window=0
+#export QUINNQUICSINK_LOG=trace
+
+function parse_additional_arg () {
+    case $1 in
+        --initial-window)
+            initial_window="$2"
+            parsed=2
+            ;;
+        --keepalive)
+            keepalive_arg="keep-alive-interval=$2"
+            keepalive="$2"
+            parsed=2
+            ;;
+        --migrate-after)
+            migrate_after="$2"
+            parsed=2
+            ;;
+        --mode)
+            mode="$2"
+            parsed=2
+            ;;
+        --use-datagram)
+            mode=datagram
+            parsed=1
+            ;;
+        --relative-initial-window)
+            relative_initial_window="$2"
+            parsed=2
+            ;;
+        --validation)
+            path_validation="$2"
+            parsed=2
+            ;;
+        *)
+            parsed=0
+            ;;
+    esac
+}
+
+function print_additional_usage () {
+    cat <<-EOF
+    --initial-window B  Initial window for the BBR algo in bytes
+                        Default: 0, which uses the default 200*1200
+    --keepalive MSEC    Client's keep-alive-interval in milliseconds
+    --migrate-after SEC Migrate after SEC seconds of starting the pipeline.
+                        Works only for sink with --rtp-timestamp
+    --mode MODE         MODE is stream (def.), datagram, or segmented-datagram
+    --relative-initial-window R
+                        Set the initial-window to R * default
+    --use-datagram      Use QUIC's datagram mode.  An alternative to --mode
+    --validation MODE   Path validation after migration.  MODE is normal/skip
+EOF
+}
+
+function check_gst_element() {
+    # Check if gst element exists
+    # Unfortunately, --exists does not work reliably
+    element="$1"
+    gst-inspect-1.0 --gst-plugin-path=${plugin_path} $element 2>/dev/null \
+        | grep -q License
+}
+
+
+. proto-common
+
+if $(check_gst_element quinnquicsrc); then
+    # installed globally
+    echo -n
+else
+    if [ ! -e ${plugin_path}/libgstquinn.so ]; then
+        echo Error: Not found: ${plugin_path}/libgstquinn.so
+        echo Set environment variable QUIC_PLUGIN_PATH
+        exit -1
+    fi
+fi
+
+case $mode in
+    stream)
+        use_datagram=false
+        ;;
+    datagram)
+        use_datagram=true
+        drop_buffer_for_datagram="drop-buffer-for-datagram=true"
+        segment_datagrams="segment-datagrams=false"
+        ;;
+    segmented-datagram)
+        use_datagram=true
+        drop_buffer_for_datagram="drop-buffer-for-datagram=false"
+        segment_datagrams="segment-datagrams=true"
+        ;;
+    *)
+        echo -n 'Error: mode should be "stream",'
+        echo ' "datagram", or "segmented-datagram"'
+        exit -1
+        ;;
+esac
+
+if [ ${path_validation:-normal} == "skip" ]; then
+    export QUINN_MIGRATE_WITHOUT_VALIDATION=yes
+fi
+
+if [ "$relative_initial_window" != 0 ]; then
+    initial_window=$(echo "$relative_initial_window * 1200 * 200" | bc)
+fi
+
+#export GST_DEBUG=2,quinnquicsrc:6
+set -x
+echo role:$role
+
+quicsink="quinnquicsink \
+  address=0.0.0.0 \
+  alpn-protocols=<gst-video>\
+  $drop_buffer_for_datagram \
+  initial-window=$initial_window \
+  role=server \
+  secure-connection=false \
+  $segment_datagrams \
+  timeout=5 \
+  use-datagram=${use_datagram}"
+
+quicsrc="quinnquicsrc \
+  $keepalive_arg \
+  address=${addr} \
+  alpn-protocols=<gst-video> \
+  bind-address=${client_addr} \
+  bind-port=${client_port} \
+  do-timestamp=true \
+  initial-window=$initial_window \
+  migration-trigger-size=${migration_trigger_size} \
+  next-address-port=${next_client_address} \
+  port=${server_external_port} \
+  role=client \
+  secure-connection=false \
+  $segment_datagrams \
+  timeout=5 \
+  use-datagram=${use_datagram}"
+
+if [ "$role" == src ]; then
+    echo " === SENDER === "
+    gst_ppln+=" ! ${quicsink}"
+    if [ "$rtp_timestamp" == yes ]; then
+        $gst "${gst_ppln}"
+    else
+        $gst $gst_ppln
+    fi
+else
+    echo " === PLAYER === "
+    gst_ppln="${quicsrc} ! ${gst_ppln}"
+    if [ "$rtp_timestamp" == yes ]; then
+        $gst "${gst_ppln}"
+    else
+        $gst $gst_ppln
+    fi
+fi

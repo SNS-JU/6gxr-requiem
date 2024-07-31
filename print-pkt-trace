@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# A simple script to show interesting part of the planned migration.
+# Form the first packet arriving on the new path, util the first
+# payload sent on the new path.
+
+tshark -r /tmp/test.h2.pcapng -T fields \
+       -e frame.number -e frame.time_relative \
+       -e ip.src -e ip.dst -e ip.len -e _ws.col.Info |
+    awk '{$5=sprintf("%5d", $5); print $0}' |
+    sed -n '/10.0.2.1/,$p' |
+    sed '/10.0.3.1.*10.0.2.1.*STREAM/q' |
+    sed 's/Protected[^,]*, //' |
+    awk '{if (t0==0){t0=$2}}
+         /10[.]0[.]3[.]1.*10[.]0[.]2[.]1/{if (t1==0){t1=$2}}
+         {t2=$2; print $0}
+         END{printf "migration time: %f\nPC-to-STREAM  : %f\n",
+                    (t2-t0), (t2-t1)}'

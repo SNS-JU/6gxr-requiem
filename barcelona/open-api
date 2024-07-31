@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+set -x
+function create_session() {
+    local ueid=$1
+    local service=$2
+    local callback=$3
+
+    body="{\"Ueid\": $ueid, \"Service\": \"$service\", \"CallbackUrl\": \"$callback\"}"
+    curl -d "$body" -H "Content-Type: application/json" \
+         -X POST $url
+}
+
+function delete_session () {
+    local ueid=$1
+    local body="{\"Ueid\": $ueid}"
+
+    curl -d "$body" -H "Content-Type: application/json" \
+         -X POST $url
+
+}
+
+body='{"key1":"value1", "key2":"value2"}'
+url="http://localhost:3000/data"
+ueid="1234"
+service="XR"
+callback="http://fastapi_b_url/Alarm"
+create_session $ueid $service $callback
+#delete_session $ueid

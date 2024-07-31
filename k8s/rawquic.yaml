@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rawquic-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rawquic-server
+  template:
+    metadata:
+      labels:
+        app: rawquic-server
+    spec:
+      imagePullSecrets:
+        - name: netsoft-registry-secret
+      containers:
+      - name: gst
+        image: netsoft.tmit.bme.hu:5050/2024-requiem/measure/rawquic
+        imagePullPolicy: Always
+      - name: debug
+        image: docker.io/l7mp/net-debug
+        imagePullPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rawquic-server
+  namespace: default
+  labels:
+    app: rawquic-server
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 5000
+      protocol: UDP
+      targetPort: 5000
+  selector:
+    app: rawquic-server

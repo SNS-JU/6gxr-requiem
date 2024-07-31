@@ -1,0 +1,168 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "migration",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_1080p@30.00fps.mp4",
+          "mode": "stream",
+          "Scenario": "involuntary",
+          "scenario": "involuntary",
+          "keepalive": 50,
+          "migrateAfter": 0
+        },
+        "script": "../../../test-in-screen -c c-k8s-barcelona --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp  --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "migration",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_1080p@30.00fps.mp4",
+          "mode": "stream",
+          "Scenario": "planned-skip",
+          "scenario": "none",
+          "keepalive": 50,
+          "migrateAfter": 4
+        },
+        "script": "../../../test-in-screen -c c-k8s-barcelona --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp  --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "migration",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "normal",
+          "video": "bbb_1080p@30.00fps.mp4",
+          "mode": "stream",
+          "Scenario": "planned-normal",
+          "scenario": "none",
+          "keepalive": 50,
+          "migrateAfter": 4
+        },
+        "script": "../../../test-in-screen -c c-k8s-barcelona --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp  --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "migration",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_1080p@30.00fps.mp4",
+          "mode": "stream",
+          "Scenario": "baseline",
+          "scenario": "baseline",
+          "keepalive": 50,
+          "migrateAfter": 0
+        },
+        "script": "../../../test-in-screen -c c-k8s-barcelona --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp  --proto raw-quic --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario -- --disable-transcode --keepalive $keepalive --mode $mode --migrate-after $migrateAfter --next-client-address 10.0.2.1:5002 --relative-initial-window $relativeInitialWindow --validation $validation"
+      }
+    },
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "repeat": [1, 2, 3, 4, 5],
+          "scenario-name": "migration",
+          "relativeInitialWindow": 50,
+          "bw": 400,
+          "delay": [5, 50, 100, 250, 350],
+          "validation": "skip",
+          "video": "bbb_1080p@30.00fps.mp4",
+          "mode": "stream",
+          "Scenario": "udp",
+          "scenario": "none",
+          "keepalive": 50,
+          "migrateAfter": 0
+        },
+        "script": "../../../test-in-screen -c c-k8s-barcelona --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../videos/$video --rtp-timestamp  --proto udp --result $PWD/result.json --display-video none --video-export-format mp4:mp4 --video-as-ref -s $scenario -- --disable-transcode --timeout 18"
+      }
+    }
+  ],
+  "default": {
+    "scale": "outer",
+    "pipeline": {"name": "none"},
+    "sut": {"type": "none"},
+    "tester": {"type": "generic"},
+    "traffic": {}
+  },
+  "visualize": [
+    {
+      "type": "simple",
+      "title": "migration: Mean Latency [ms]",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "migration" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.Scenario"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.Scenario"},
+            "avg_mean": {"$avg": "$out.rtp-stats.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.rtp-stats.mean_y"},
+            "avg_median": {"$avg": "$out.rtp-stats.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.rtp-stats.median_y"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "title": "migration: Mean DSSIM",
+      "x-axis": "delay",
+      "y-axis": "avg_mean",
+      "error-bar":  "stddev_mean",
+      "group-by": ["scenario"],
+      "aggregate": [
+        { "$match": { "tester.environ.scenario-name": "migration" } },
+        {
+          "$group": {
+            "_id": {
+              "delay": "$tester.environ.delay",
+              "scenario": "$tester.environ.Scenario"
+            },
+            "delay": {"$first": "$tester.environ.delay"},
+            "scenario": {"$first": "$tester.environ.Scenario"},
+            "avg_mean": {"$avg": "$out.dssim.mean_y"},
+            "stddev_mean": {"$stdDevPop": "$out.dssim.mean_y"},
+            "avg_median": {"$avg": "$out.dssim.median_y"},
+            "stddev_median": {"$stdDevPop": "$out.dssim.median_y"}
+          }
+        }
+      ]
+    }
+  ]
+}

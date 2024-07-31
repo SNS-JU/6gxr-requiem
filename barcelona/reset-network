@@ -1,0 +1,46 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# Used for resetting network configuration after running a test
+# case. Unfixed issue: turning on the VPN tunnel, activated it over
+# the WiFi connection instead of the wired connection; this probably
+# could have been solved by modifying the routing.
+
+# default: 5G
+# backup: WiFi
+
+k8s_net=192.168.123.0/24
+backup_gw=192.168.49.1
+default_gw=10.222.222.1
+default_addr=10.222.222.3
+default_ifname=enp2s0 # VPN over eth_if
+eth_ifname=enp2s0
+backup_ifname=wlp3s0
+
+function get_ip_addresses () {
+    # If ifname is not given, show all addresses
+    ifname=$1
+
+    ip --json a show $ifname | \
+        jq -r -C '.[] | select(.link_type!="loopback")
+                      | .addr_info[] | select(.family=="inet")
+                      | .local'
+}
+
+sudo ip link set dev $eth_ifname up
+sleep 3
+# nmcli connection up vpn-i2cat
+
+default_addr=$(get_ip_addresses $default_ifname)
+backup_addr=$(get_ip_addresses $backup_ifname)
+# default_gw=$(ip --json a show tun0 | jq -r '.[] | .addr_info[0].address')
+
+sudo ip route add $k8s_net via $default_gw metric 101
+# sudo ip route add $k8s_net via 10.0.1.37 dev tun0 proto static metric 50
+sudo ip route add $k8s_net via $backup_gw metric 201
+sudo ip rule add from $backup_addr lookup 50
+sudo ip route add $k8s_net via $backup_gw table 50
+
+./update-k8s-config c-k8s-barcelona

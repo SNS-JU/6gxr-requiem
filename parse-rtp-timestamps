@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+import argparse
+import copy
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+#TODO: do something with the error column
+
+sys_ts = 'sys-ts-ns' # Key for "system timestamp in nanoseconds".
+
+def log_stats(data_file, out_file):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  p.communicate(input=f"""
+      set print "{out_file}"
+      stats "{data_file}" using 7
+      exit
+  """.encode())
+
+def set_latency_ms(frame, cur_sys_ts):
+    latency_ns = cur_sys_ts - frame['start'][sys_ts]
+    latency_ms = latency_ns / 1000.0 / 1000.0
+    frame.update({ "latency-ms": round(latency_ms, 3) })
+
+    return
+
+def ts_as_ms(ts):
+    "Return timestamp(delta) in miniseconds"
+    return ts / 1000000.0
+
+def write_outfile(outfile, frames, sep=',', header_line=True, start_ts=None):
+    max_frame_id = max([frame["frame-id"] for frame in frames.values()])
+    start_ts = start_ts or \
+      min([frame['start'][sys_ts] for frame in frames.values()])
+    prev_latency=0
+
+    with open(outfile, "w") as output:
+        if header_line:
+            line = sep.join(['"frame-id"', '"start RTP SEQ NUM"', '"arrived"',
+                             '"RTP SEQ NUMs received"','"RTP SEQ NUMs sent"',
+                             '"sender rel.system timestamp [ms]"','"latency"',
+                             '"prev_latency"'])
+            output.write(line)
+            output.write("\n")
+        for frame in frames.values():
+            frame_sn_sent = (frame["end"]["rtp-seq-num"] -
+                             frame["start"]["rtp-seq-num"] + 1)
+            frame_sn_not_arrived = len(frame["rtp-seq-nums"])
+            arrived = "completely_arrived"
+            latency = frame.get("latency-ms")
+            extra_seq_num = frame.get('extra-seq-num', 0)
+            if (frame["frame-id"] == max_frame_id
+                and extra_seq_num > 0
+                and frame_sn_not_arrived == 0):
+                arrived = "arrival_cannot_be_decided"
+                frame_sn_not_arrived -= extra_seq_num
+            elif frame_sn_not_arrived == frame_sn_sent:
+                arrived = "completely_missing"
+            elif frame_sn_not_arrived > 0:
+                arrived = f"partially_arrived"
+                if not args.partial:
+                    latency = ""
+
+            if latency == "":
+                if sep != ",":
+                    latency = "1/0"
+
+            row = [frame['frame-id'],
+                   frame['start']['rtp-seq-num'],
+                   arrived,
+                   frame_sn_sent - frame_sn_not_arrived,
+                   frame_sn_sent,
+                   ts_as_ms(frame['start'][sys_ts] - start_ts),
+                   latency,
+                   prev_latency]
+            line = sep.join([f"{s}" for s in row])
+            output.write(line)
+            output.write("\n")
+            if latency not in ["", "1/0"]:
+                prev_latency = latency
+
+def plot(preambulum, data_file, labels=True, x_is_seqno=False):
+  p = subprocess.Popen(['/usr/bin/gnuplot'],
+                       stdin=subprocess.PIPE)
+  if labels:
+    if x_is_seqno:
+      def_labels = '''
+        set xlabel "frame sequence number"
+        set ylabel "latency [ms]"
+      '''
+    else:
+      def_labels = '''
+        set xlabel "systime of the sender [ms]"
+        set ylabel "latency [ms]"
+      '''
+  else:
+    def_labels = ''
+
+  x_column = {True: 1, False: 6}[x_is_seqno]
+  p.communicate(input=f"""
+    {preambulum}
+    set key off
+    {def_labels}
+    plot "{data_file}" using \
+      {x_column}:(stringcolumn(3) eq "completely_arrived"? $7: 1/0) w lp, \
+    "{data_file}" using \
+      {x_column}:(stringcolumn(3) eq "arrival_cannot_be_decided"? $7: 1/0) w lp, \
+    "{data_file}" using \
+      {x_column}:(stringcolumn(3) eq "partially_arrived"? $8: 1/0) w p pt 7 ps 1, \
+    "{data_file}" using \
+      {x_column}:(stringcolumn(3) eq "completely_missing"? $8: 1/0) \
+      w p pt 7 ps 1 lc rgb "red"
+
+    exit
+  """.encode())
+
+def plot_ascii(filename, x_is_seqno=False):
+  pre = f'''
+    set title "Latency derived from RTP timestamps"
+    set term dumb enhanced ansi256
+  '''
+  plot(pre, filename, False, x_is_seqno)
+
+def plot_pdf(data_file, out_file, x_is_seqno=False):
+  pre = f'''
+    set term pdf color enhanced
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, x_is_seqno=x_is_seqno)
+
+def plot_tikz(data_file, out_file, x_is_seqno=False):
+  pre = f'''
+    set term tikz latex color tikzarrows
+    set grid
+    set output "{out_file}"
+  '''
+  plot(pre, data_file, x_is_seqno=x_is_seqno)
+
+def get_filename(out_dir, basename, postfix=''):
+  return str(Path(out_dir) / basename) + postfix
+
+def get_one_item(file_obj, args):
+    headers = None
+    for line in file_obj:
+        if headers is None:
+            headers = line.split()
+            continue
+        cur = {k: int(v) for k, v in zip(headers, line.split())}
+
+        # A magic constant is not elegant, but it is easier to treat
+        # every value as integer.
+        if cur.get('error') == 2 and not args.ignore_small_buffer_error:
+            print("Error: LOG_STORAGE_DEFFAULT_CAPACITY is too small."
+                  " Use --ignore_small_buffer_error, or"
+                  " change it in gst-pipeline.cpp",
+                  file=sys.stderr)
+            exit(-1)
+        yield cur
+
+def close_frame(frames, item, end_rtp_seq_num):
+    frame = frames.get(item['rtp-ts'])
+    start_rtp_seq_num = frame['start']['rtp-seq-num']
+    rtp_seq_nums = list(range(start_rtp_seq_num, end_rtp_seq_num + 1))
+    frame.update({
+        'rtp-seq-nums': rtp_seq_nums,
+        'end': {
+            sys_ts: item[sys_ts],
+            "rtp-seq-num": end_rtp_seq_num,
+        },
+    })
+
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="")
+    # TODO: latency calculation for partially arrived frames could be
+    # refined.
+    parser.add_argument(
+        "--partial", action="store_true",
+        help="Log latency for those partially arrived video frames where the "\
+        "last RTP sequence number associated with the frame has arrived "\
+        "(latency is computed compared to this seq num)")
+    parser.add_argument(
+        "--start-timestamp", type=int,
+        help="Use this timestamp as the zero point when calculating "\
+        "the relative elapsed time")
+    parser.add_argument(
+        '--ignore-small-buffer-error', '-i', action='store_true',
+        help="Ignore error of small log buffer")
+    parser.add_argument(
+        '--out-dir', type=str,
+        help="Dir to put results into / get logs from")
+    parser.add_argument(
+        '--ascii', '-a', action='store_true',
+        help='Print an ascii plot as well')
+    parser.add_argument(
+        '--pdf', '-p', action='store_true',
+        help='Print a pdf plot')
+    parser.add_argument('--stats', '-s', action='store_true',
+                      help="Print statistics into a file")
+    parser.add_argument(
+        '--tikz', '-t', action='store_true',
+        help='Print a tikz plot')
+    parser.add_argument(
+        '--seqno', action='store_true',
+        help='X axis is frame seq.no instead of sending time')
+    args = parser.parse_args()
+
+    frames = {}
+    src_log = get_filename(args.out_dir, 'rtp-src.log')
+    sink_log = get_filename(args.out_dir, 'rtp-sink.log')
+    if not os.path.exists(src_log):
+        print(f"No such file: {src_log}")
+        exit(-1)
+    if not os.path.exists(sink_log):
+        print(f"No such file: {sink_log}")
+        exit(-1)
+
+    with open(src_log, 'r') as sender:
+        prev = None
+        frame_id = 1
+        cur_rtp_ts = None
+
+        for cur in get_one_item(sender, args):
+            cur_rtp_ts = cur['rtp-ts']
+
+            # Arrived to a new frame
+            if frames.get(cur_rtp_ts) is None:
+                # Processing a new frame
+                frames.update({
+                    cur_rtp_ts: {
+                        'frame-id': frame_id,
+                        'start': cur,
+                    },
+                })
+                frame_id += 1
+
+                if prev is not None:
+                    if cur['rtp-ts'] != prev['rtp-ts']:
+                        # Previous frame can be closed
+                        close_frame(frames, prev, cur['rtp-seq-num'] - 1)
+
+            prev = cur
+
+        if cur_rtp_ts is None:
+            exit()
+
+        if frames[cur_rtp_ts].get("end") is None:
+            close_frame(frames, cur, cur['rtp-seq-num'])
+
+    max_frame_id = frame_id - 1
+
+    with open(sink_log, 'r') as receiver:
+        prev = None
+        for cur in get_one_item(receiver, args):
+            # TODO: this cannot detect if the RTP sequence numbers are
+            # not increasing (are not in order). This might not be an
+            # issue because the rtpjitterbuffer might take of
+            # forwarding the buffers in order.
+
+            frame = frames.get(cur['rtp-ts'])
+            if frame is None:
+                print("Received RTP seq num that does not "
+                      f"appear in the sender's list: {cur['rtp-ts']}")
+                continue
+            try:
+                frame["rtp-seq-nums"].remove(cur['rtp-seq-num'])
+            except ValueError as e:
+                if frame["frame-id"] == max_frame_id:
+                    # Actual end seq num of the last frame (when it is
+                    # an I frame) cannot be discovered with the
+                    # current method
+                    extra_seq_num = frame.get('extra-seq-num', 0)
+                    frame['extra-seq-num'] = extra_seq_num + 1
+                    set_latency_ms(frame, cur[sys_ts])
+                else:
+                    print(repr(e))
+                    exit(-1)
+            if cur['rtp-seq-num'] == frame['end']['rtp-seq-num']:
+                set_latency_ms(frame, cur[sys_ts])
+
+    basename = (Path(args.out_dir)/'rtp-ts-stats').resolve()
+    datafile = get_filename(args.out_dir, basename, '.data')
+    write_outfile(Path(args.out_dir)/'rtp-ts-stats.csv', frames, ',', True,
+                  args.start_timestamp)
+    write_outfile(datafile, frames, ' ', False, args.start_timestamp)
+    if args.ascii:
+        plot_ascii(datafile, x_is_seqno=args.seqno)
+    if args.pdf:
+        plot_pdf(datafile, get_filename(args.out_dir, basename, '.pdf'),
+                 x_is_seqno=args.seqno)
+    if args.tikz:
+        plot_tikz(datafile, get_filename(args.out_dir, basename, '.tex'),
+                  x_is_seqno=args.seqno)
+    if args.stats:
+        log_stats(datafile, get_filename(args.out_dir, basename,
+                                         '-overall.txt'))

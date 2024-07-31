@@ -1,0 +1,11 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# Turn off VPN and interface
+
+eth_ifname=enp2s0
+
+# nmcli connection down vpn-i2cat
+sudo ip link set dev $eth_ifname down

@@ -1,0 +1,94 @@
+{
+  "benchmark": [
+    {
+      "scale": "joint",
+      "tester": {
+        "type": "generic",
+        "environ": {
+          "bw": 4,
+          "datagram": ["--use-datagram"],
+          "delay": [50],
+          "keepalive": [50, 1000],
+          "repeat": [1]
+        },
+        "script": "../../../test-in-screen -c $PWD/conf --out-dir $PWD --bw $bw --delay $delay --video $PWD/../../../cheetah.mp4 --cut-link 3 --fec-scheme conv_v615 --proto raw-quic --result $PWD/result.json -- --keepalive $keepalive $datagram"
+      }
+    }
+  ],
+  "visualize": [
+    {
+      "type": "simple",
+      "x-axis": "keepalive",
+      "y-axis": "avg_median",
+      "error-bar": "stddev",
+      "title": "keepalive-vs-median-latency",
+      "group-by": ["delay", "datagram"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "delay": "$tester.environ.delay",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "avg_median": {"$avg": "$out.stats.median_y"},
+            "median": {"$first": "$out.stats.median_y"},
+            "stddev": {"$stdDevPop": "$out.stats.median_y"},
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "keepalive": {"$first": "$tester.environ.keepalive"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "simple",
+      "x-axis": "keepalive",
+      "y-axis": "avg_frames",
+      "error-bar": "stddev",
+      "title": "number of received video frames",
+      "group-by": ["delay", "datagram"],
+      "aggregate": [
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "delay": "$tester.environ.delay",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "avg_frames": {"$avg": "$out.stats.records"},
+            "stddev": {"$stdDevPop": "$out.stats.records"},
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "keepalive": {"$first": "$tester.environ.keepalive"}
+          }
+        }
+      ]
+    },
+    {
+      "type": "datafile",
+      "x-axis": "latency",
+      "y-axis": "on-time-frame-ratio",
+      "datafile": "../../measurements/{id}/latency-budget.data",
+      "title": "Latency budget",
+      "group-by": ["delay", "datagram", "keepalive"],
+      "aggregate": [
+        { "$match": { "tester.environ.repeat": 1 }
+        },
+        {
+          "$group": {
+            "_id": {
+              "datagram": "$tester.environ.datagram",
+              "delay": "$tester.environ.delay",
+              "keepalive": "$tester.environ.keepalive"
+            },
+            "datagram": {"$first": "$tester.environ.datagram"},
+            "delay": {"$first": "$tester.environ.delay"},
+            "keepalive": {"$first": "$tester.environ.keepalive"},
+            "id": {"$first": "$out.test-id"}
+          }
+        }
+      ]
+    }
+  ]
+}

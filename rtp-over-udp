@@ -1,0 +1,37 @@
+#!/bin/bash
+
+# Copyright (C) 2024 by its authors (See AUTHORS).  Licensed under the
+# EUPL-1.2 or later.  See LICENSE for the exact licensing conditions.
+
+# Default values
+
+addr=10.0.3.1
+# For compatibility with raw-quic/proto-common
+mode=datagram
+
+. proto-common
+
+echo role:$role
+if [ -z "$timeout" -a $role == sink ]; then
+    echo "Warning: proto=UDP is used but timeout is not set, receiver might not quit"
+fi
+
+set -x
+
+if [ "$role" == src ]; then
+    echo " === SENDER === "
+    gst_ppln+=" ! udpsink host=$addr port=5000"
+    if [ "$rtp_timestamp" == yes ]; then
+        $gst "${gst_ppln}"
+    else
+        $gst $gst_ppln
+    fi
+else
+    echo " === PLAYER === "
+    gst_ppln="udpsrc port=5000 timeout=5 ! ${gst_ppln}"
+    if [ "$rtp_timestamp" == yes ]; then
+        $gst "${gst_ppln}"
+    else
+        $gst $gst_ppln
+    fi
+fi
